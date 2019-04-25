@@ -59,6 +59,8 @@ class OmEngine(object):
         """注册事件监听"""
         self.eventEngine.register(EVENT_CONTRACT, self.processContractEvent)
 
+        self.eventEngine.register(EVENT_TIMER, self.processTimerEvent)
+
     # ----------------------------------------------------------------------
     def processTickEvent(self, event):
         """行情事件"""
@@ -98,6 +100,7 @@ class OmEngine(object):
         self.eventEngine.register(EVENT_TICK + vtSymbol, self.processTickEvent)
         self.eventEngine.register(EVENT_TRADE + vtSymbol, self.processTradeEvent)
 
+
     # ----------------------------------------------------------------------
     def initEngine(self, fileName):
         """初始化引擎"""
@@ -133,6 +136,7 @@ class OmEngine(object):
 
         for d in setting['chain']:
             chainSymbol = d['chainSymbol']
+            underlyingSymbol = d['underlyingSymbol']
             r = d['r']
 
             # 锁定标的对象
@@ -233,8 +237,7 @@ class OmEngine(object):
         event.dict_['data'] = log
         self.eventEngine.put(event)
 
-        # ----------------------------------------------------------------------
-
+    # ----------------------------------------------------------------------
     def adjustR(self):
         """调整折现率"""
         if self.portfolio:
@@ -242,6 +245,10 @@ class OmEngine(object):
 
         for chain in self.portfolio.chainDict.values():
             self.writeLog(u'期权链%s的折现率r拟合为%.3f' % (chain.symbol, chain.r))
+
+    def processTimerEvent(self, event):
+        if self.portfolio:
+            self.portfolio.onTimer()
 
 
 ########################################################################
