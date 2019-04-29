@@ -9,12 +9,6 @@
             "underlyingSymbol": "510050", 
             "chainSymbol": "510050-1905",
             "r": 0.03
-        },
-        {
-            "underlyingSymbol": "510050",
-            "chainSymbol": "510050-1906",
-            "r": 0.03
         }
-
     ]
 }

@@ -78,6 +78,7 @@ class OmEngine(object):
         """合约事件"""
         contract = event.dict_['data']
         if contract.symbol and contract.productClass == PRODUCT_OPTION:
+            # print(contract.name, contract.strikePrice, contract.underlyingSymbol)
             self.optionContractDict[contract.symbol] = contract
 
     # ----------------------------------------------------------------------
@@ -99,7 +100,6 @@ class OmEngine(object):
         # 订阅事件
         self.eventEngine.register(EVENT_TICK + vtSymbol, self.processTickEvent)
         self.eventEngine.register(EVENT_TRADE + vtSymbol, self.processTradeEvent)
-
 
     # ----------------------------------------------------------------------
     def initEngine(self, fileName):
@@ -149,6 +149,8 @@ class OmEngine(object):
             callDict = {}
             putDict = {}
 
+            # print(chainSymbol)
+
             for symbol, contract in self.optionContractDict.items():
                 # print(symbol, contract.underlyingSymbol)
                 # print(d['chainSymbol'])
@@ -166,10 +168,13 @@ class OmEngine(object):
                             key += 'a'
                         putDict[key] = option
 
+            # print(callDict.keys())
+            # print(putDict.keys())
+
             # 期权排序
             strikeList = callDict.keys()
             strikeList.sort()
-            print(strikeList)
+            # print(strikeList)
             callList = [callDict[k] for k in strikeList]
             putList = [putDict[k] for k in strikeList]
 
@@ -193,6 +198,9 @@ class OmEngine(object):
         for chain in chainList:
             for option in chain.optionDict.values():
                 self.subscribeEvent(option.vtSymbol)
+
+        # 订阅合约后，开始计算波动率指数
+        self.portfolio.calcVix()
 
         # 载入成功返回
         return True
