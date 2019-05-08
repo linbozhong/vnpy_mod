@@ -19,8 +19,8 @@ from vnpy.trader.vtConstant import (PRODUCT_OPTION, OPTION_CALL, OPTION_PUT,
                                     PRICETYPE_LIMITPRICE)
 from vnpy.pricing import black, bs, crr, bsCython, crrCython
 
-from .omBase import (OmOption, OmUnderlying, OmChain, OmPortfolio,
-                     EVENT_OM_LOG, EVENT_OM_STRATEGY, EVENT_OM_STRATEGYLOG,
+from .omBase import (OmOption, OmUnderlying, OmChain, OmPortfolio, OmVixCalculator,
+                     EVENT_OM_LOG, EVENT_OM_STRATEGY, EVENT_OM_STRATEGYLOG, EVENT_OM_VIX,
                      OM_DB_NAME)
 from .strategy import STRATEGY_CLASS
 
@@ -50,6 +50,8 @@ class OmEngine(object):
 
         self.strategyEngine = OmStrategyEngine(self, eventEngine)
 
+        self.vixEngine = None
+
         self.registerEvent()
 
         print('Custom OmEngine is running..')
@@ -58,8 +60,6 @@ class OmEngine(object):
     def registerEvent(self):
         """注册事件监听"""
         self.eventEngine.register(EVENT_CONTRACT, self.processContractEvent)
-
-        self.eventEngine.register(EVENT_TIMER, self.processTimerEvent)
 
     # ----------------------------------------------------------------------
     def processTickEvent(self, event):
@@ -200,7 +200,7 @@ class OmEngine(object):
                 self.subscribeEvent(option.vtSymbol)
 
         # 订阅合约后，开始计算波动率指数
-        self.portfolio.calcVix()
+        self.vixEngine = OmVixEngine(self, self.eventEngine)
 
         # 载入成功返回
         return True
@@ -254,9 +254,81 @@ class OmEngine(object):
         for chain in self.portfolio.chainDict.values():
             self.writeLog(u'期权链%s的折现率r拟合为%.3f' % (chain.symbol, chain.r))
 
+
+class OmVixEngine(object):
+    """波动率计算引擎"""
+
+    def __init__(self, omEngine, eventEngine):
+        self.omEngine = omEngine
+        self.eventEngine = eventEngine
+        self.portfolio = omEngine.portfolio
+
+        self.active = False
+
+        self.vixDict = OrderedDict()
+        self.timerDict = dict()
+
+        for chain in self.portfolio.chainDict.values():
+            self.vixDict[chain.symbol] = OmVixCalculator(chain)
+
+        self.registerEvent()
+        self.start()
+
+    def start(self):
+        self.active = True
+
+    def stop(self):
+        self.active = False
+
+    def registerEvent(self):
+        self.eventEngine.register(EVENT_TIMER, self.processTimerEvent)
+        self.eventEngine.register(EVENT_OM_VIX, self.processOmVixEvent)
+
     def processTimerEvent(self, event):
-        if self.portfolio:
-            self.portfolio.onTimer()
+        """处理定时事件"""
+        for calculator in self.vixDict.values():
+            self.calcVix(calculator)
+
+    def processOmVixEvent(self, event):
+        """处理波动率数据事件"""
+        vix = event.dict_['data']
+        print(vix.chainSymbol, vix.datetime.strftime('%Y%m%d %H:%M:%S'), vix.vix)
+
+    def calcVix(self, calculator):
+        """计算波指"""
+        if self.active:
+            tName = 'vixT.' + calculator.chain.symbol
+            fIdxName = 'vixFIdx.' + calculator.chain.symbol
+            vixName = 'vix.' + calculator.chain.symbol
+
+            option = calculator.chain.optionDict.values()[0]
+            if not calculator.t:
+                self.timer(tName, 1, calculator.calcT, option)
+            else:
+                self.timer(tName, 60, calculator.calcT, option)
+
+            if not calculator.fIdx:
+                self.timer(fIdxName, 1, calculator.calcFIdx)
+            else:
+                self.timer(fIdxName, 12, calculator.calcFIdx)
+
+            vix = self.timer(vixName, 0, calculator.calcVix)
+            if vix:
+                event = Event(type_=EVENT_OM_VIX)
+                event.dict_['data'] = vix
+                self.eventEngine.put(event)
+
+    def timer(self, name, interval, func, *args, **kwargs):
+        """自定义定时器"""
+        if self.timerDict.get(name) is None:
+            self.timerDict[name] = 0
+
+        if self.timerDict[name] > interval:
+            res = func(*args, **kwargs)
+            self.timerDict[name] = 0
+            return res
+
+        self.timerDict[name] += 1
 
 
 ########################################################################
@@ -352,7 +424,7 @@ class OmStrategyEngine(object):
         """处理定时事件"""
         for strategy in self.strategyDict.values():
             if strategy.trading:
-                self.callStrategyFunc(strategy, strategy.onTimer)
+                self.callStrategyFunc(strategy, strategy.calcVix)
 
     # ----------------------------------------------------------------------
     def loadSetting(self):

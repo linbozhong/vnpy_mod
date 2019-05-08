@@ -11,7 +11,7 @@ from math import log1p
 from datetime import datetime, timedelta
 
 from vnpy.trader.vtConstant import *
-from vnpy.trader.vtObject import VtTickData
+from vnpy.trader.vtObject import VtBaseData, VtTickData
 
 from .omDate import getTimeToMaturity
 
@@ -25,6 +25,21 @@ OM_DB_NAME = 'VnTrader_OptionMaster_Db'
 EVENT_OM_LOG = 'eOmLog'
 EVENT_OM_STRATEGY = 'eOmStrategy.'
 EVENT_OM_STRATEGYLOG = 'eOmStrategyLog'
+EVENT_OM_VIX = 'eOmVix'
+
+
+########################################################################
+class VtVixData(VtBaseData):
+    """期权波动率指数数据类"""
+
+    def __init__(self):
+        super(VtVixData, self).__init__()
+
+        self.datetime = None
+
+        self.chainSymbol = EMPTY_STRING
+        self.tMinutes = EMPTY_INT
+        self.vix = EMPTY_FLOAT
 
 
 ########################################################################
@@ -533,7 +548,7 @@ class OmPortfolio(object):
     def onTimer(self):
         """定时器回调函数"""
         for calculator in self.vixDict.values():
-            calculator.onTimer()
+            calculator.calcVix()
 
     def calcVix(self):
         """计算波动率指数"""
@@ -543,51 +558,33 @@ class OmPortfolio(object):
 
 ########################################################################
 class OmVixCalculator(object):
+    """
+    波动率计算
+    计算依赖路径：t >> f >> k0 >> qk >> sigma2
+    """
+
     def __init__(self, chain):
         self.chain = chain
         self.calls = self.chain.callDict.values()
         self.puts = self.chain.putDict.values()
 
-        self.active = False
-
         # 计算波动率相关
         self.r = self.chain.optionDict.values()[0].r
         self.ks = [option.k for option in self.calls]
 
-        # 这两个参数定时计算即可，所以可以缓存起来复用
+        # 这三个参数定时计算即可，所以可以缓存起来复用
         self.fIdx = EMPTY_INT
+        self.tMinutes = EMPTY_INT
         self.t = EMPTY_FLOAT
 
         # 避免重复计算
         self.f = EMPTY_FLOAT
         self.k0 = EMPTY_FLOAT
 
-        # 定时器容器
-        self.timerDict = dict()
-
-    def start(self):
-        """开始计算波动率指数"""
-
-        # 先计算剩余时间、轮询option，直到成功计算t
-        # while not self.t:
-        #     for option in self.calls:
-        #         self.calcT(option)
-        #         if self.t:
-        #             break
-
-        # 启动onTimer
-        self.active = True
-        print('Start calculate vix..')
-
-    def stop(self):
-        """停止计算波动率指数"""
-        if self.active:
-            self.active = False
-
     def calcT(self, option):
         """计算期权合约剩余到期时间（以分钟计并且年化）"""
         if option.time and option.date:
-            print(option.time, option.date)
+            # print(option.time, option.date)
             hour = int(option.time[0:2])
             minute = int(option.time[3:5])
             m1 = (24 - hour) * 60 - minute  # 当前时间距离当日24点的剩余分钟
@@ -597,11 +594,13 @@ class OmVixCalculator(object):
             m2 = ((expiryDate - nowDate).days - 1) * 24 * 60  # 中间天数的剩余分钟
 
             m3 = 9.5 * 60  # 到期日当天0点到9点30的剩余分钟
+
+            self.tMinutes = m1 + m2 + m3
             self.t = float(m1 + m2 + m3) / float(365 * 24 * 60)  # 所有剩余分钟的年化
             # print('VixT:', self.t)
 
     def calcFIdx(self):
-        """计算远期指数F对应的期权行权价所在的index"""
+        """计算远期指数F对应的期权行权价所在的index，计算此项只依赖期权价格"""
         calls = self.calls
         puts = self.puts
 
@@ -618,7 +617,7 @@ class OmVixCalculator(object):
         # print('vixFIdx:{} Strike:{}'.format(self.fIdx, calls[self.fIdx].k))
 
     def calcF(self):
-        """计算远期指数F"""
+        """计算远期指数F， 计算此项依赖剩余到期时间t和f所在的index"""
         if self.fIdx and self.t:
             calls = self.calls
             puts = self.puts
@@ -631,20 +630,22 @@ class OmVixCalculator(object):
             return f
 
     def calcK0(self):
-        """计算K0行权价"""
+        """计算K0行权价，计算此项依赖远期指数f"""
         if self.f:
             ks = self.ks
             f = self.f
             i = 0
             while ks[i] < f:
                 i += 1
+                if i == len(ks):
+                    break
             k0 = ks[i - 1]
             # print('vixK0:', k0)
             self.k0 = k0
             return k0
 
     def calcDeltaK(self):
-        """计算行权价档差"""
+        """计算行权价档差，计算此项无依赖"""
         deltaK = {}
         ks = self.ks
         deltaK[ks[0]] = ks[1] - ks[0]
@@ -654,7 +655,7 @@ class OmVixCalculator(object):
         return deltaK
 
     def calcQK(self):
-        """计算波动率指数各档行权价期权的价格序列字典"""
+        """计算波动率指数各档行权价期权的价格序列字典， 计算此项依赖k0和期权价格"""
         if self.k0:
             qK = {}
             calls = self.calls
@@ -669,7 +670,7 @@ class OmVixCalculator(object):
                     qK[k] = (calls[i].midPrice + puts[i].midPrice) / 2
             return qK
 
-    def calSigma2(self):
+    def calcSigma2(self):
         """计算某一个时刻，某一到期期限的波动率"""
         if self.t and self.fIdx:
             # 不需要计算
@@ -687,34 +688,27 @@ class OmVixCalculator(object):
             # 需要实时计算
             qK = self.calcQK()
 
-            sum_K = sum(deltaK[k] / k ** 2 * qK[k] * math.exp(r * t) for k in ks)
-            sigma2 = 2 * sum_K / t - (f / k0 - 1) ** 2 / t
-            print('{}-Vix:{}'.format(self.chain.symbol, 100 * math.sqrt(sigma2)))
-            return sigma2
+            if qK:
+                sum_K = sum(deltaK[k] / k ** 2 * qK[k] * math.exp(r * t) for k in ks)
+                sigma2 = 2 * sum_K / t - (f / k0 - 1) ** 2 / t
+                # print('{}-Vix:{}'.format(self.chain.symbol, 100 * math.sqrt(sigma2)))
+                return sigma2
 
-    def onTimer(self):
-        """定时事件回调函数"""
-        if self.active:
-            option = self.chain.optionDict.values()[0]
-            if not self.t:
-                self.timer('vixT', 1, self.calcT, option)
-            else:
-                self.timer('vixT', 60, self.calcT, option)
+    def calcVix(self):
+        """返回波动率tick对象"""
+        sigma2 = self.calcSigma2()
 
-            if not self.fIdx:
-                self.timer('vixFIdx', 1, self.calcFIdx)
-            else:
-                self.timer('vixFIdx', 12, self.calcFIdx)
+        if sigma2:
+            option = self.calls[0]
+            hour = int(option.time[0:2])
+            minute = int(option.time[3:5])
+            second = int(option.time[6:8])
+            tradeDate = datetime.strptime(option.date, '%Y%m%d')
+            dt = tradeDate.replace(hour=hour, minute=minute, second=second)
 
-            self.timer('vix', 3, self.calSigma2)
-
-    def timer(self, name, interval, func, *args, **kwargs):
-        """自定义定时器"""
-        if self.timerDict.get(name) is None:
-            self.timerDict[name] = 0
-
-        if self.timerDict[name] > interval:
-            func(*args, **kwargs)
-            self.timerDict[name] = 0
-
-        self.timerDict[name] += 1
+            vix = VtVixData()
+            vix.chainSymbol = self.chain.symbol
+            vix.tMinutes = self.tMinutes
+            vix.datetime = dt
+            vix.vix = 100 * math.sqrt(sigma2)
+            return vix
