@@ -1,6 +1,7 @@
 # encoding: UTF-8
 
 # from vnpy.trader.app.optionMaster.omStrategy import OmStrategyTemplate
+from vnpy.trader.vtUtility import ArrayManager, BarGenerator
 
 # 改成载入本地目录的omStrategy模块，否则会引用安装目录的模块，从而引发动态引用找不到模块的错误
 from omStrategy import OmStrategyTemplate
@@ -58,7 +59,7 @@ class DemoStrategy(OmStrategyTemplate):
     def onTick(self, tick):
         """行情推送"""
         # self.writeLog(u'%s策略收到行情推送' % self.name)
-        self.writeLog(u'%s：最新价：%s' % (tick.symbol, tick.lastPrice))
+        self.writeLog(u'%s：最新价：%s, 涨跌停价：%s %s' % (tick.symbol, tick.lastPrice, tick.upperLimit, tick.lowerLimit))
         self.putEvent()
 
     # ----------------------------------------------------------------------
@@ -82,3 +83,11 @@ class DemoStrategy(OmStrategyTemplate):
             call, put = self.getAtmContract(self.chainSymbol)
             self.writeLog(u'平值购:%s, 平值沽:%s' % (call, put))
             self.timeCount = 0
+
+    def onVixTick(self, vixTick):
+        print('Strategy onVixTick:', vixTick.lastPrice)
+
+
+    def onVixBar(self, vixBar):
+        pass
+        # print('Strategy onVixTick:', vixTick.lastPrice)

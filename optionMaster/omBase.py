@@ -3,6 +3,7 @@
 from __future__ import division
 
 import math
+import traceback
 import pandas as pd
 
 from copy import copy
@@ -20,6 +21,8 @@ CALL = 1
 PUT = -1
 
 OM_DB_NAME = 'VnTrader_OptionMaster_Db'
+TICK_DB_NAME = 'VnTrader_Tick_Db'
+MINUTE_DB_NAME = 'VnTrader_1Min_Db'
 
 # 事件定义
 EVENT_OM_LOG = 'eOmLog'
@@ -29,17 +32,17 @@ EVENT_OM_VIX = 'eOmVix'
 
 
 ########################################################################
-class VtVixData(VtBaseData):
+class VtVixData(VtTickData):
     """期权波动率指数数据类"""
 
     def __init__(self):
         super(VtVixData, self).__init__()
-
-        self.datetime = None
-
-        self.chainSymbol = EMPTY_STRING
-        self.tMinutes = EMPTY_INT
-        self.vix = EMPTY_FLOAT
+        #
+        # self.datetime = None
+        #
+        # self.chainSymbol = EMPTY_STRING
+        # self.tMinutes = EMPTY_INT
+        # self.vix = EMPTY_FLOAT
 
 
 ########################################################################
@@ -581,6 +584,8 @@ class OmVixCalculator(object):
         self.f = EMPTY_FLOAT
         self.k0 = EMPTY_FLOAT
 
+        self.lastTime = None
+
     def calcT(self, option):
         """计算期权合约剩余到期时间（以分钟计并且年化）"""
         if option.time and option.date:
@@ -696,19 +701,28 @@ class OmVixCalculator(object):
 
     def calcVix(self):
         """返回波动率tick对象"""
-        sigma2 = self.calcSigma2()
+        # 收盘时间不要计算
 
-        if sigma2:
+        try:
             option = self.calls[0]
-            hour = int(option.time[0:2])
-            minute = int(option.time[3:5])
-            second = int(option.time[6:8])
-            tradeDate = datetime.strptime(option.date, '%Y%m%d')
-            dt = tradeDate.replace(hour=hour, minute=minute, second=second)
+            if '.' in option.time:
+                datetime_ = datetime.strptime(' '.join([option.date, option.time]), '%Y%m%d %H:%M:%S.%f')
+            else:
+                datetime_ = datetime.strptime(' '.join([option.date, option.time]), '%Y%m%d %H:%M:%S')
 
-            vix = VtVixData()
-            vix.chainSymbol = self.chain.symbol
-            vix.tMinutes = self.tMinutes
-            vix.datetime = dt
-            vix.vix = 100 * math.sqrt(sigma2)
-            return vix
+            if datetime_ == self.lastTime:
+                return
+
+            sigma2 = self.calcSigma2()
+            if sigma2:
+                vix = VtVixData()
+                vix.vtSymbol = self.chain.symbol
+                # vix.tMinutes = self.tMinutes
+                vix.datetime = datetime_
+                vix.lastPrice = 100 * math.sqrt(sigma2)
+
+                self.lastTime = datetime_
+                return vix
+        except:
+            msg = traceback.format_exc()
+            print(msg)

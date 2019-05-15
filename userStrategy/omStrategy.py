@@ -4,6 +4,8 @@ from vnpy.trader.vtConstant import (DIRECTION_LONG, DIRECTION_SHORT,
                                     OFFSET_OPEN, OFFSET_CLOSE,
                                     EMPTY_UNICODE)
 
+TICK_DB_NAME = 'VnTrader_Tick_Db'
+MINUTE_DB_NAME = 'VnTrader_1Min_Db'
 
 ########################################################################
 class OmStrategyTemplate(object):
@@ -12,6 +14,10 @@ class OmStrategyTemplate(object):
     author = EMPTY_UNICODE
     name = EMPTY_UNICODE  # 策略实例名称
     vtSymbols = []  # 交易的合约vt系统代码
+    chainSymbol = EMPTY_UNICODE
+
+    tickDbName = TICK_DB_NAME
+    barDbName = MINUTE_DB_NAME
 
     inited = False  # 是否进行了初始化
     trading = False  # 是否启动交易，由引擎管理
@@ -73,8 +79,27 @@ class OmStrategyTemplate(object):
         """定时推送"""
         raise NotImplementedError
 
-        # ----------------------------------------------------------------------
+    # ----------------------------------------------------------------------
+    def onVixTick(self, vixTick):
+        """vixTick推送"""
+        raise NotImplementedError
 
+    # ----------------------------------------------------------------------
+    def onVixBar(self, vixBar):
+        """vixBar推送"""
+        raise NotImplementedError
+
+    # ----------------------------------------------------------------------
+    def loadVixTick(self, days):
+        """读取tick数据"""
+        return self.engine.loadVixTick(self.tickDbName, self.chainSymbol, days)
+
+    # ----------------------------------------------------------------------
+    def loadVixBar(self, days):
+        """读取bar数据"""
+        return self.engine.loadVixBar(self.barDbName, self.chainSymbol, days)
+
+    # ----------------------------------------------------------------------
     def cancelOrder(self, vtOrderID):
         """撤单"""
         self.engine.cancelOrder(vtOrderID)
@@ -82,26 +107,29 @@ class OmStrategyTemplate(object):
     # ----------------------------------------------------------------------
     def buy(self, vtSymbol, price, volume):
         """开多"""
-        return self.engine.buy(vtSymbol, price, volume)
+        if self.trading:
+            return self.engine.buy(vtSymbol, price, volume)
+        else:
+            return []
 
     # ----------------------------------------------------------------------
     def short(self, vtSymbol, price, volume):
         """开空"""
         return self.engine.short(vtSymbol, price, volume)
 
-        # ----------------------------------------------------------------------
+    # ----------------------------------------------------------------------
 
     def sell(self, vtSymbol, price, volume):
         """平多"""
         return self.engine.sell(vtSymbol, price, volume)
 
-        # ----------------------------------------------------------------------
+    # ----------------------------------------------------------------------
 
     def cover(self, vtSymbol, price, volume):
         """平空"""
         return self.engine.cover(vtSymbol, price, volume)
 
-        # ----------------------------------------------------------------------
+    # ----------------------------------------------------------------------
 
     def dbQuery(self, flt):
         """查询数据"""
@@ -143,11 +171,7 @@ class OmStrategyTemplate(object):
         content = '%s:%s' % (self.name, content)
         self.engine.writeLog(content)
 
-    # 自定义功能
     # ----------------------------------------------------------------------
-    # ----------------------------------------------------------------------
-    # ----------------------------------------------------------------------
-
     def addTickEvent(self, vtSymbol):
         """把合约加入symbolStrategy列表，使得可以用onTick推送对应的行情"""
         strategyList = self.engine.symbolStrategyDict.get(vtSymbol)
@@ -156,8 +180,9 @@ class OmStrategyTemplate(object):
         else:
             if self not in strategyList:
                 strategyList.append(self)
-        print(strategyList)
+        # print(strategyList)
 
+    # ----------------------------------------------------------------------
     def getAtmContract(self, chainSymbol):
         """通过gamma值找到平值购和平值沽的合约代码"""
         chain = self.getChain(chainSymbol)

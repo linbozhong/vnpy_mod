@@ -6,22 +6,27 @@ import shelve
 import os
 import traceback
 from collections import OrderedDict
+from queue import Queue, Empty
+from threading import Thread
+from pymongo.errors import DuplicateKeyError
+from datetime import datetime, timedelta
 
 from vnpy.event import Event
 from vnpy.trader.vtEvent import (EVENT_TICK, EVENT_TRADE, EVENT_CONTRACT,
                                  EVENT_ORDER, EVENT_TIMER)
-from vnpy.trader.vtFunction import getTempPath, getJsonPath
-from vnpy.trader.vtObject import (VtLogData, VtSubscribeReq,
+from vnpy.trader.vtFunction import getTempPath, getJsonPath, todayDate
+from vnpy.trader.vtObject import (VtLogData, VtSubscribeReq, VtBarData, VtTickData,
                                   VtOrderReq, VtCancelOrderReq)
 from vnpy.trader.vtConstant import (PRODUCT_OPTION, OPTION_CALL, OPTION_PUT,
                                     DIRECTION_LONG, DIRECTION_SHORT,
                                     OFFSET_OPEN, OFFSET_CLOSE,
                                     PRICETYPE_LIMITPRICE)
 from vnpy.pricing import black, bs, crr, bsCython, crrCython
+from vnpy.trader.vtUtility import BarGenerator
 
 from .omBase import (OmOption, OmUnderlying, OmChain, OmPortfolio, OmVixCalculator,
                      EVENT_OM_LOG, EVENT_OM_STRATEGY, EVENT_OM_STRATEGYLOG, EVENT_OM_VIX,
-                     OM_DB_NAME)
+                     TICK_DB_NAME, MINUTE_DB_NAME, OM_DB_NAME)
 from .strategy import STRATEGY_CLASS
 
 # 定价模型字典
@@ -234,6 +239,7 @@ class OmEngine(object):
     def stop(self):
         """关闭函数"""
         self.saveImpvSetting()
+        self.vixEngine.stop()
 
     # ----------------------------------------------------------------------
     def writeLog(self, content):
@@ -260,10 +266,16 @@ class OmVixEngine(object):
 
     def __init__(self, omEngine, eventEngine):
         self.omEngine = omEngine
+        self.mainEngine = omEngine.mainEngine
+        self.strategyEngine = omEngine.strategyEngine
         self.eventEngine = eventEngine
         self.portfolio = omEngine.portfolio
 
+        self.bg = BarGenerator(self.onVixBar)
+
         self.active = False
+        self.queue = Queue()
+        self.thread = Thread(target=self.run)
 
         self.vixDict = OrderedDict()
         self.timerDict = dict()
@@ -275,12 +287,30 @@ class OmVixEngine(object):
         self.start()
 
     def start(self):
+        """启动"""
         self.active = True
+        self.thread.start()
 
     def stop(self):
-        self.active = False
+        """关闭"""
+        if self.active:
+            self.active = False
+            self.thread.join()
+
+    def run(self):
+        """运行入库的线程"""
+        while self.active:
+            try:
+                dbName, collectionName, d = self.queue.get(block=True, timeout=1)
+                try:
+                    self.mainEngine.dbInsert(dbName, collectionName, d)
+                except DuplicateKeyError:
+                    pass
+            except Empty:
+                pass
 
     def registerEvent(self):
+        """注册事件回调函数"""
         self.eventEngine.register(EVENT_TIMER, self.processTimerEvent)
         self.eventEngine.register(EVENT_OM_VIX, self.processOmVixEvent)
 
@@ -292,7 +322,24 @@ class OmVixEngine(object):
     def processOmVixEvent(self, event):
         """处理波动率数据事件"""
         vix = event.dict_['data']
-        print(vix.chainSymbol, vix.datetime.strftime('%Y%m%d %H:%M:%S'), vix.vix)
+        self.onVixTick(vix)
+
+        if self.bg:
+            self.bg.updateTick(vix)
+
+        print(vix.vtSymbol, vix.datetime.strftime('%Y%m%d %H:%M:%S.%f'), vix.lastPrice)
+
+    def onVixTick(self, vix):
+        """波动率tick更新"""
+        self.insertData(TICK_DB_NAME, vix.vtSymbol, vix)
+
+    def onVixBar(self, bar):
+        """波动率bar更新"""
+        self.insertData(MINUTE_DB_NAME, bar.vtSymbol, bar)
+
+    def insertData(self, dbName, collectionName, data):
+        """把数据放入入库队列"""
+        self.queue.put((dbName, collectionName, data.__dict__))
 
     def calcVix(self, calculator):
         """计算波指"""
@@ -346,13 +393,15 @@ class OmStrategyEngine(object):
 
         self.portfolio = None
 
+        self.today = todayDate()
+
         self.strategyDict = {}  # name: strategy
         self.symbolStrategyDict = {}  # vtSymbol：strategy list
         self.orderStrategyDict = {}  # vtOrderID: strategy
 
         self.registerEvent()
 
-        print('Stratege Engine run')
+        print('Strategy Engine run')
 
     # ----------------------------------------------------------------------
     def registerEvent(self):
@@ -361,6 +410,7 @@ class OmStrategyEngine(object):
         self.eventEngine.register(EVENT_TRADE, self.processTradeEvent)
         self.eventEngine.register(EVENT_ORDER, self.processOrderEvent)
         self.eventEngine.register(EVENT_TIMER, self.processTimerEvent)
+        self.eventEngine.register(EVENT_OM_VIX, self.processVixTickEvent)
 
     # ----------------------------------------------------------------------
     def writeLog(self, content):
@@ -372,8 +422,7 @@ class OmStrategyEngine(object):
         event.dict_['data'] = log
         self.eventEngine.put(event)
 
-        # ----------------------------------------------------------------------
-
+    # ----------------------------------------------------------------------
     def callStrategyFunc(self, strategy, func, params=None):
         """调用策略的函数，若触发异常则捕捉"""
         try:
@@ -391,8 +440,17 @@ class OmStrategyEngine(object):
                                  traceback.format_exc()])
             self.writeLog(content)
 
-            # ----------------------------------------------------------------------
+    # ----------------------------------------------------------------------
+    def processVixTickEvent(self, event):
+        vixTick = event.dict_['data']
+        l = self.strategyDict.values()
 
+        for strategy in l:
+            if strategy.inited:
+                self.callStrategyFunc(strategy, strategy.onVixTick, vixTick)
+
+
+    # ----------------------------------------------------------------------
     def processTickEvent(self, event):
         """处理行情事件"""
         tick = event.dict_['data']
@@ -422,9 +480,11 @@ class OmStrategyEngine(object):
     # ----------------------------------------------------------------------
     def processTimerEvent(self, event):
         """处理定时事件"""
-        for strategy in self.strategyDict.values():
-            if strategy.trading:
-                self.callStrategyFunc(strategy, strategy.calcVix)
+        l = self.strategyDict.values()
+
+        for strategy in l:
+            if strategy.inited:
+                self.callStrategyFunc(strategy, strategy.onTimer)
 
     # ----------------------------------------------------------------------
     def loadSetting(self):
@@ -437,8 +497,7 @@ class OmStrategyEngine(object):
             for setting in l:
                 self.loadStrategy(setting)
 
-                # ----------------------------------------------------------------------
-
+    # ----------------------------------------------------------------------
     def loadStrategy(self, setting):
         """加载策略"""
         try:
@@ -492,8 +551,7 @@ class OmStrategyEngine(object):
             strategy.trading = True
             self.callStrategyFunc(strategy, strategy.onStart)
 
-            # ----------------------------------------------------------------------
-
+    # ----------------------------------------------------------------------
     def stopStrategy(self, name):
         """停止策略"""
         strategy = self.strategyDict[name]
@@ -505,6 +563,39 @@ class OmStrategyEngine(object):
             for vtOrderID, s in self.orderStrategyDict.items():
                 if s is strategy:
                     self.cancelOrder(vtOrderID)
+
+    # ----------------------------------------------------------------------
+    def loadVixBar(self, dbName, collectionName, days):
+        """从数据库中读取Bar数据，startDate是datetime对象"""
+
+        # 如果没有则从数据库中读取数据
+        startDate = self.today - timedelta(days)
+
+        d = {'datetime': {'$gte': startDate}}
+        barData = self.mainEngine.dbQuery(dbName, collectionName, d, 'datetime')
+
+        l = []
+        for d in barData:
+            bar = VtBarData()
+            bar.__dict__ = d
+            l.append(bar)
+        return l
+
+    # ----------------------------------------------------------------------
+    def loadVixTick(self, dbName, collectionName, days):
+        """从数据库中读取Tick数据，startDate是datetime对象"""
+        startDate = self.today - timedelta(days)
+
+        d = {'datetime': {'$gte': startDate}}
+        tickData = self.mainEngine.dbQuery(dbName, collectionName, d, 'datetime')
+
+        l = []
+        for d in tickData:
+            tick = VtTickData()
+            tick.__dict__ = d
+            l.append(tick)
+        return l
+
 
     # ----------------------------------------------------------------------
     def sendOrder(self, vtSymbol, direction, offset, price, volume):
