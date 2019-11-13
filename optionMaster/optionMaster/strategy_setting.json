@@ -2,7 +2,6 @@
     {
         "name": "demo",
         "className": "DemoStrategy",
-        "vtSymbols": ["510050.SSE"],
-		"chainSymbol": "510050-1905"
+        "vtSymbols": "510050.SSE"
     }
 ]
