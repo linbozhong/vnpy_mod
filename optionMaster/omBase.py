@@ -5,6 +5,7 @@ from __future__ import division
 import math
 import traceback
 import pandas as pd
+import time
 
 from copy import copy
 from collections import OrderedDict
@@ -703,6 +704,9 @@ class OmVixCalculator(object):
         """返回波动率tick对象"""
         # 收盘时间不要计算
 
+        # t = datetime.fromtimestamp(time.time()).strftime('%Y%m%d %H:%M:%S')
+        # print(t, 'Run CalcVix Function.')
+
         try:
             option = self.calls[0]
             if '.' in option.time:
@@ -711,6 +715,7 @@ class OmVixCalculator(object):
                 datetime_ = datetime.strptime(' '.join([option.date, option.time]), '%Y%m%d %H:%M:%S')
 
             if datetime_ == self.lastTime:
+                # print('No new time ')
                 return
 
             sigma2 = self.calcSigma2()

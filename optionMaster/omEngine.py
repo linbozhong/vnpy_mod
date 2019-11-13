@@ -239,7 +239,8 @@ class OmEngine(object):
     def stop(self):
         """关闭函数"""
         self.saveImpvSetting()
-        self.vixEngine.stop()
+        if self.vixEngine:
+            self.vixEngine.stop()
 
     # ----------------------------------------------------------------------
     def writeLog(self, content):
