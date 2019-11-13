@@ -129,6 +129,9 @@ dmypy.json
 # Test Data
 #*.csv
 
+# log
+*.log
+
 # Temp dir
 optionMaster/temp/
 optionMaster/data/
@@ -136,3 +139,4 @@ optionMaster/data/
 # Account setting
 optionMaster/SEC_connect.json
 optionMaster/SEC_connect_yh.json
+sync/*.json
