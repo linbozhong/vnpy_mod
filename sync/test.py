@@ -2,16 +2,17 @@ import unittest
 from time import sleep
 from sync.utility import *
 from sync.mysql_handler import MySqlHandler
-from sync.setting import (mysql_setting, CTA_SETTING_FILENAME, CTA_DATA_FILENAME, Content)
+from sync.setting import (mysql_setting, CTA_SETTING_FILENAME, CTA_DATA_FILENAME, Content, MYSQL_SETTING_FILENAME)
 from sync.sync_script import (init, sync,
                               get_strategy_to_class_name, strategy_to_table_name,
                               strategy_to_class_name_map, content_map,
                               get_cta_data_fields, get_cta_setting_fields, get_follow_data_fields,
-                              create_table, get_table_list,
+                              create_table, get_table_list, clear_server_data,
                               is_local_exist, is_remote_exist, get_local_modified_time, get_server_modified_time,
                               cta_setting_to_server, cta_data_to_server, follow_data_to_server,
                               cta_setting_from_server, cta_data_from_server, follow_data_from_server)
 
+mysql_setting.update(load_json(MYSQL_SETTING_FILENAME))
 init()
 mysql = MySqlHandler()
 mysql.connect(**mysql_setting)
@@ -83,6 +84,11 @@ class TestSyncScript(unittest.TestCase):
         print('remote exist', is_remote_exist(mysql, Content.CTA_DATA))
         # print('remote non-exist', is_remote_exist(mysql, 'follow_setting'))
 
+    def test_clear_server_table(self):
+        clear_server_data(mysql, Content.CTA_SETTING)
+        clear_server_data(mysql, Content.CTA_DATA)
+        clear_server_data(mysql, Content.FOLLOW_DATA)
+
     def test_cta_setting_to_server(self):
         cta_setting_to_server(mysql)
 
@@ -143,6 +149,10 @@ class TestMysql(unittest.TestCase):
         print(mysql.gen_delete_sql('atr_rsi_data', {'field': 'rsi_sell', 'operator': '=', 'value': 34}))
         # mysql.delete('atr_rsi_data', {'field': 'rsi_sell', 'operator': '=', 'value': 34})
         # mysql.delete_all('double_ma_strategy')
+
+    def test_drop_table(self):
+        mysql.drop_table("cta_data_atr_rsi")
+        mysql.drop_table("cta_setting_atr_rsi")
 
     def test_insert(self):
         pass

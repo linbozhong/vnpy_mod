@@ -161,6 +161,15 @@ class MySqlHandler(object):
             logger.debug(f"{table_name}:数据表已经存在")
 
     @execute_decorator
+    def drop_table(self, table_name: str):
+        if self.is_table_exists(table_name):
+            drop_sql = f"DROP TABLE `{table_name}`"
+            self._execute(drop_sql)
+            logger.debug(f"{table_name}:表格表删除成功")
+        else:
+            logger.debug(f"{table_name}:数据表不存在")
+
+    @execute_decorator
     def insert(self, table_name: str, record: dict):
         sql = self.gen_insert_sql(table_name, record)
         self._execute(sql, record)

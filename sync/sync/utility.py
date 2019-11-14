@@ -52,11 +52,13 @@ def get_file_stat(filename: str) -> os.stat_result:
 def load_json(filename: str) -> dict:
     """"""
     file_path = get_file_path(filename)
+    print(file_path)
     if file_path.exists():
         with open(str(file_path), mode='r', encoding='UTF-8') as f:
             data = json.load(f)
         return data
     else:
+        print('no exists')
         return {}
 
 

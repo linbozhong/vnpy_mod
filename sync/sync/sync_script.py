@@ -183,6 +183,7 @@ def create_table(mysql_handler: MySqlHandler, content: Content) -> None:
     fields_list = create_func()
     for (table_name, field_dict) in fields_list:
         mysql_handler.create_table(table_name, field_dict)
+    logger.info(f"{content.value}：数据表创建成功")
 
 
 def get_table_list(mysql_handler: MySqlHandler, content: Content) -> List:
@@ -385,6 +386,19 @@ def follow_data_to_server(mysql_handler: MySqlHandler) -> None:
     logger.info(f"跟随单仓位：数据同步到远程成功")
 
 
+def clear_server_data(mysql_handler: MySqlHandler, content: Content):
+    """
+    清除数据库数据
+    """
+    tables = get_table_list(mysql_handler, content)
+    if tables:
+        for table in tables:
+            mysql_handler.drop_table(table)
+        logger.info(f"{content.value}所有数据表删除成功")
+    else:
+        logger.info(f"{content.value}没有数据表")
+
+
 def sync(mysql_handler: MySqlHandler, content: Content) -> None:
     """
     自动同步
@@ -413,6 +427,10 @@ def sync(mysql_handler: MySqlHandler, content: Content) -> None:
             logger.info("远程数据已存在")
             if local_time > server_time:
                 logger.info("本地数据是最新的")
+                # 删除数据库上所有数据和表格
+                clear_server_data(mysql_handler, content)
+                create_table(mysql_handler, content)
+                # 重新建立表格和数据
                 sync_to_server_func(mysql_handler)
                 logger.info("上传数据成功")
             elif server_time > local_time:
@@ -425,7 +443,6 @@ def sync(mysql_handler: MySqlHandler, content: Content) -> None:
         else:
             logger.info("远程数据不存在")
             create_table(mysql_handler, content)
-            logger.info("数据表创建成功")
             sync_to_server_func(mysql_handler)
             logger.info("上传数据成功")
     else:

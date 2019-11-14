@@ -12,11 +12,13 @@ CTA_DATA_FILENAME = "cta_strategy_data.json"
 CTA_SETTING_FILENAME = "cta_strategy_setting.json"
 FOLLOW_DATA_FILENAME = "follow_trading_data.json"
 
-# cta_dir = "E:\\vnpy\\vnpy-2.0.7\\examples\\cta_trader\\.vntrader"
-# follow_dir = "E:\\vnpy\\vnpy-2.0.7\\examples\\follower_trader\\.vntrader"
+MYSQL_SETTING_FILENAME = "mysql_setting.json"
 
-cta_dir = ""
-follow_dir = ""
+cta_dir = "E:\\vnpy\\vnpy-2.0.7\\examples\\cta_trader\\.vntrader"
+follow_dir = "E:\\vnpy\\vnpy-2.0.7\\examples\\follower_trader\\.vntrader"
+
+# cta_dir = ""
+# follow_dir = ""
 
 file_setting = {
     CTA_DATA_FILENAME: cta_dir,
@@ -31,5 +33,6 @@ mysql_setting = {
     "password": "password",
     "database": "database_nmae"
 }
+
 
 logger_level = logging.INFO

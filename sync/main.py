@@ -2,9 +2,13 @@ import traceback
 from time import sleep
 
 from sync.logger import logger
-from sync.setting import mysql_setting, Content
+from sync.setting import mysql_setting, Content, MYSQL_SETTING_FILENAME
 from sync.mysql_handler import MySqlHandler
 from sync.sync_script import init, sync
+from sync.utility import load_json
+
+mysql_setting.update(load_json(MYSQL_SETTING_FILENAME))
+print(mysql_setting)
 
 
 def main():
