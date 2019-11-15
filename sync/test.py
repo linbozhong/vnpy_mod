@@ -13,6 +13,10 @@ from sync.sync_script import (init, sync,
                               cta_setting_from_server, cta_data_from_server, follow_data_from_server)
 
 mysql_setting.update(load_json(MYSQL_SETTING_FILENAME))
+
+mysql_setting['host'] = "192.168.0.107"
+print(mysql_setting)
+
 init()
 mysql = MySqlHandler()
 mysql.connect(**mysql_setting)

@@ -326,24 +326,30 @@ def follow_data_from_server(mysql_handler: MySqlHandler) -> dict:
     # sync ids
     ids_list = mysql_handler.query_all('follow_data_trade_ids')
     # print(ids_list)
-    ids_dict = defaultdict(list)
-    for row_dict in ids_list:
-        follow_id = row_dict['follow_id']
-        order_id = row_dict['order_id']
-        ids_dict[follow_id].append(order_id)
+    if ids_list[0]['follow_id'] == 'empty':
+        ids_dict = dict()
+    else:
+        ids_dict = defaultdict(list)
+        for row_dict in ids_list:
+            follow_id = row_dict['follow_id']
+            order_id = row_dict['order_id']
+            ids_dict[follow_id].append(order_id)
     # print(ids_dict)
 
     # sync pos
     pos_list = mysql_handler.query_all('follow_data_positions')
     # print(pos_list)
-    pos_dict = dict()
-    for row_dict in pos_list:
-        vt_symbol = row_dict['vt_symbol']
-        pos_dict[vt_symbol] = dict()
+    if pos_list[0]['vt_symbol'] == 'empty':
+        pos_dict = dict()
+    else:
+        pos_dict = dict()
+        for row_dict in pos_list:
+            vt_symbol = row_dict['vt_symbol']
+            pos_dict[vt_symbol] = dict()
 
-        for key in ['vt_symbol', 'last_modified_time']:
-            row_dict.pop(key)
-        pos_dict[vt_symbol].update(row_dict)
+            for key in ['vt_symbol', 'last_modified_time']:
+                row_dict.pop(key)
+            pos_dict[vt_symbol].update(row_dict)
     # print(pos_dict)
 
     server_data['tradeid_orderids_dict'] = ids_dict
@@ -362,27 +368,45 @@ def follow_data_to_server(mysql_handler: MySqlHandler) -> None:
     id_table_name = 'follow_data_trade_ids'
     mysql_handler.delete_all(id_table_name)
     trade_ids = follow_data['tradeid_orderids_dict']
-    for trade_id, order_list in trade_ids.items():
+
+    if not trade_ids:
         row = dict()
-        row['follow_id'] = trade_id
+        row['follow_id'] = 'empty'
+        row['order_id'] = 'empty'
         row['last_modified_time'] = modified_time
-        for order in order_list:
-            row['order_id'] = order
-            mysql_handler.insert(id_table_name, row)
+        mysql_handler.insert(id_table_name, row)
+    else:
+        for trade_id, order_list in trade_ids.items():
+            row = dict()
+            row['follow_id'] = trade_id
+            row['last_modified_time'] = modified_time
+            for order in order_list:
+                row['order_id'] = order
+                mysql_handler.insert(id_table_name, row)
     logger.info(f"跟随单ID：数据同步到远程成功")
 
     # sync positions
     pos_table_name = 'follow_data_positions'
     mysql_handler.delete_all(pos_table_name)
     positions = follow_data['positions']
-    for vt_symbol, pos_dict in positions.items():
+    if not positions:
         row = dict()
-        row['vt_symbol'] = vt_symbol
+        row['source_long'] = 0
+        row['source_short'] = 0
+        row['target_long'] = 0
+        row['target_short'] = 0
+        row['vt_symbol'] = 'empty'
         row['last_modified_time'] = modified_time
-        row.update(pos_dict)
-
-        # insert
         mysql_handler.insert(pos_table_name, row)
+    else:
+        for vt_symbol, pos_dict in positions.items():
+            row = dict()
+            row['vt_symbol'] = vt_symbol
+            row['last_modified_time'] = modified_time
+            row.update(pos_dict)
+
+            # insert
+            mysql_handler.insert(pos_table_name, row)
     logger.info(f"跟随单仓位：数据同步到远程成功")
 
 
