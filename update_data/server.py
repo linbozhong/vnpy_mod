@@ -1,9 +1,12 @@
 import json
 import traceback
 import signal
+import logging
 from typing import List, Callable
+from pathlib import Path
 from datetime import datetime
 from multiprocessing.connection import Listener
+from multiprocessing.context import AuthenticationError
 from threading import Thread
 
 from vnpy.trader.database import database_manager
@@ -22,6 +25,42 @@ INTERVAL_RQ2VT = {
 }
 
 
+class Logger(object):
+    def __init__(self, name, level=logging.INFO):
+        self.logger = logging.getLogger(name)
+        self.formatter = logging.Formatter(
+            "%(asctime)s  %(levelname)s: %(message)s"
+        )
+
+        self.logger.setLevel(level)
+        self.add_file_handler()
+        self.add_console_handler()
+
+    def __getattr__(self, item):
+        return getattr(self.logger, item)
+
+    def add_file_handler(self):
+        today_date = datetime.now().strftime("%Y%m%d")
+        filename = f"{self.name}_{today_date}.log"
+        file_path = Path.cwd().joinpath(filename)
+
+        file_handler = logging.FileHandler(
+            file_path, mode="a", encoding="utf8"
+        )
+        file_handler.setLevel(self.level)
+        file_handler.setFormatter(self.formatter)
+        self.logger.addHandler(file_handler)
+
+    def add_console_handler(self):
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(self.level)
+        console_handler.setFormatter(self.formatter)
+        self.logger.addHandler(console_handler)
+
+
+logger = Logger("data_updater")
+
+
 class RpcServer:
     def __init__(self):
         self._functions = {}
@@ -37,12 +76,17 @@ class RpcServer:
                     r = self._functions[func_name](*args, **kwargs)
                     rep = (True, r)
                     connection.send(json.dumps(rep))
-                except Exception as e:
+                    logger.info(f"{func_name}运行成功")
+                except:
                     msg = traceback.format_exc()
                     rep = (False, msg)
                     connection.send(json.dumps(rep))
+                    logger.error(msg)
         except EOFError:
             pass
+        except:
+            msg = traceback.format_exc()
+            logger.error(msg)
 
 
 class DataRpcServer(RpcServer):
@@ -59,16 +103,21 @@ class DataRpcServer(RpcServer):
         self.register(self.echo_test)
         self.register(self.get_update_symbol)
         self.register(self.save_to_database)
-        print(self._functions)
 
     def run_server(self):
         sock = Listener(address=(self.host, self.port), authkey=self.authkey)
         while 1:
-            print("开始服务..")
-            connection = sock.accept()
-            th = Thread(target=self.handle_connection, args=(connection,))
-            th.daemon = True
-            th.start()
+            logger.info("开始服务..")
+            try:
+                connection = sock.accept()
+                th = Thread(target=self.handle_connection, args=(connection,))
+                th.daemon = True
+                th.start()
+            except AuthenticationError as e:
+                logger.error(e)
+            except:
+                msg = traceback.format_exc()
+                logger.error(msg)
 
     @staticmethod
     def get_update_symbol() -> List:

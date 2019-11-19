@@ -11,12 +11,12 @@ class RemoteException(Exception):
 
 
 class RpcClient:
-    def __init__(self):
+    def __init__(self, host: str = "localhost", port: int = 17000, authkey: bytes = b"keykey"):
         self._connection = None
 
-        self.host = "localhost"
-        self.port = 17000
-        self.authkey = b"keykey"
+        self.host = host
+        self.port = port
+        self.authkey = authkey
 
     def connect(self):
         self._connection = Client(address=(self.host, self.port), authkey=self.authkey)
