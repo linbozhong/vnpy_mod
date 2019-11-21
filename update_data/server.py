@@ -41,7 +41,7 @@ class Logger(object):
 
     def add_file_handler(self):
         today_date = datetime.now().strftime("%Y%m%d")
-        filename = f"{self.name}_{today_date}.log"
+        filename = f"{self.name}_run.log"
         file_path = Path.cwd().joinpath(filename)
 
         file_handler = logging.FileHandler(
@@ -84,9 +84,8 @@ class RpcServer:
                     logger.error(msg)
         except EOFError:
             pass
-        except:
-            msg = traceback.format_exc()
-            logger.error(msg)
+        except Exception as e:
+            logger.error(e)
 
 
 class DataRpcServer(RpcServer):
@@ -115,9 +114,8 @@ class DataRpcServer(RpcServer):
                 th.start()
             except AuthenticationError as e:
                 logger.error(e)
-            except:
-                msg = traceback.format_exc()
-                logger.error(msg)
+            except Exception as e:
+                logger.error(e)
 
     @staticmethod
     def get_update_symbol() -> List:

@@ -23,8 +23,9 @@ def main():
 
     try:
         init()
-        for content in [Content.CTA_SETTING, Content.CTA_DATA, Content.FOLLOW_DATA]:
-            sync(mysql, content)
+        # for content in [Content.CTA_SETTING, Content.CTA_DATA, Content.FOLLOW_DATA]:
+        #     sync(mysql, content)
+        sync(mysql, Content.FOLLOW_DATA)
     except:
         traceback.print_exc()
         mysql.close_db()
