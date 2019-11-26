@@ -99,6 +99,8 @@ class FollowEngine(BaseEngine):
         self.due_out_req_list = []
         self.refresh_pos_interval = 0
 
+        self.subscribed_symbols = set()
+
         # Timeout auto cancel
         self.active_order_set = set()
         self.active_order_counter = {}
@@ -168,10 +170,10 @@ class FollowEngine(BaseEngine):
         """
         Get connected gateway names.
         """
-        # if not self.gateway_names:
-        accounts = self.main_engine.get_all_accounts()
-        self.gateway_names = [account.gateway_name for account in accounts]
-        print(self.gateway_names)
+        if not self.gateway_names:
+            accounts = self.main_engine.get_all_accounts()
+            self.gateway_names = [account.gateway_name for account in accounts]
+            print(self.gateway_names)
         return self.gateway_names
 
     def get_positions(self):
@@ -417,9 +419,19 @@ class FollowEngine(BaseEngine):
         position = event.data
 
         if position.gateway_name == self.source_gateway_name:
+            self.pre_subscribe(position)
             self.update_source_pos(position)
         else:
             self.offset_converter.update_position(position)
+
+    def pre_subscribe(self, position: PositionData):
+        vt_symbol = position.vt_symbol
+        if vt_symbol not in self.subscribed_symbols:
+            if self.subscribe(vt_symbol):
+                self.write_log(f"仓位合约{vt_symbol}订阅成功")
+                self.subscribed_symbols.add(vt_symbol)
+            else:
+                self.write_log(f"仓位合约{vt_symbol}订阅失败")
 
     def send_queue_order(self):
         """
@@ -557,6 +569,7 @@ class FollowEngine(BaseEngine):
         if contract:
             req = SubscribeRequest(symbol=contract.symbol, exchange=contract.exchange)
             self.main_engine.subscribe(req, self.source_gateway_name)
+            return True
 
     def init_limited_price(self, tick: TickData):
         """
@@ -655,10 +668,10 @@ class FollowEngine(BaseEngine):
             return req
 
     def convert_order_price(
-        self,
-        vt_symbol: str,
-        direction: Direction,
-        price: float = 0
+            self,
+            vt_symbol: str,
+            direction: Direction,
+            price: float = 0
     ):
         """
         Make sure price is in limit-up and limit-down range.
@@ -730,9 +743,9 @@ class FollowEngine(BaseEngine):
             return False
 
     def send_order(
-        self,
-        req: OrderRequest,
-        vt_tradeid: str
+            self,
+            req: OrderRequest,
+            vt_tradeid: str
     ):
         """
         Send order and save data.
@@ -748,9 +761,9 @@ class FollowEngine(BaseEngine):
             self.due_out_req_list.append((vt_tradeid, req))
 
     def send_and_record(
-        self,
-        req: OrderRequest,
-        vt_tradeid: str
+            self,
+            req: OrderRequest,
+            vt_tradeid: str
     ):
         """
         Send and record result.
@@ -886,12 +899,12 @@ class FollowEngine(BaseEngine):
             self.sync_pos(vt_symbol)
 
     def send_sync_order_req(
-        self,
-        vt_symbol: str,
-        direction: Direction,
-        volume: int,
-        price: float,
-        offset: Offset
+            self,
+            vt_symbol: str,
+            direction: Direction,
+            volume: int,
+            price: float,
+            offset: Offset
     ):
         """
         Create order request for sync pos.
