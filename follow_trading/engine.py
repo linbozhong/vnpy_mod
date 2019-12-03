@@ -1,3 +1,5 @@
+import pandas as pd
+
 from collections import defaultdict
 from datetime import datetime, timedelta
 from enum import Enum
@@ -71,9 +73,9 @@ class FollowEngine(BaseEngine):
         self.source_gateway_name = "CTP"
         self.target_gateway_name = "RPC"
         self.filter_trade_timeout = 60
-        self.cancel_order_timeout = 5
+        self.cancel_order_timeout = 10
         self.multiples = 1
-        self.tick_add = 5
+        self.tick_add = 10
         self.inverse_follow = False
         self.order_type = OrderType.LIMIT
 
@@ -249,6 +251,30 @@ class FollowEngine(BaseEngine):
                 self.follow_data[name].clear()
             save_json(self.data_filename, self.follow_data)
 
+    def save_trade(self):
+        """
+        Save trade record to file.
+        """
+        today = self.get_current_time().strftime('%Y%m%d')
+        trade_folder = get_folder_path('trade')
+        trade_file_name = f"trade_{today}.csv"
+        trade_file_path = trade_folder.joinpath(trade_file_name)
+
+        trades = self.main_engine.get_all_trades()
+        trade_list = []
+        for trade in trades:
+            d = copy(trade.__dict__)
+            d["exchange"] = d["exchange"].value
+            d["direction"] = d["direction"].value
+            d["offset"] = d["offset"].value
+            d['dt'] = f"{today} {d['time']}"
+            d.pop("vt_symbol")
+
+            trade_list.append(d)
+        df = pd.DataFrame(trade_list)
+        df.to_csv(trade_file_path, index=False, encoding='utf-8')
+        self.write_log("成交记录保存成功")
+
     def update_tradeids(self):
         """
         Update received tradeids from main engine
@@ -288,6 +314,8 @@ class FollowEngine(BaseEngine):
 
         self.save_follow_setting()
         self.clear_empty_pos()
+
+        self.save_trade()
 
         now = self.get_current_time()
         print("stop now:", now)
