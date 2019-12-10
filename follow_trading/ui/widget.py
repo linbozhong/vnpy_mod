@@ -107,6 +107,9 @@ class FollowManager(QtWidgets.QWidget):
         self.multiples_line = QtWidgets.QLineEdit(str(self.follow_engine.multiples))
         self.multiples_line.setValidator(validator)
         self.multiples_line.editingFinished.connect(self.set_multiples)
+        self.single_max_line = QtWidgets.QLineEdit(str(self.follow_engine.single_max))
+        self.single_max_line.setValidator(validator)
+        self.single_max_line.editingFinished.connect(self.set_single_max)
 
         self.pos_delta_monitor = PosDeltaMonitor(self.main_engine, self.event_engine)
         self.log_monitor = LogMonitor(self.main_engine, self.event_engine)
@@ -120,6 +123,7 @@ class FollowManager(QtWidgets.QWidget):
         form.addRow("超时自动撤单（秒）", self.timeout_line)
         form.addRow("超价下单档位", self.tickout_line)
         form.addRow("跟随倍数", self.multiples_line)
+        form.addRow("单笔最大手数", self.single_max_line)
         form.addRow(self.start_button)
         form.addRow(self.stop_button)
 
@@ -186,6 +190,12 @@ class FollowManager(QtWidgets.QWidget):
         text = self.multiples_line.text()
         self.follow_engine.set_parameters('multiples', int(text))
         self.write_log(f"跟随倍数：{self.follow_engine.multiples} 设置成功")
+
+    def set_single_max(self):
+        """"""
+        text = self.single_max_line.text()
+        self.follow_engine.set_parameters('single_max', int(text))
+        self.write_log(f"单笔最大手数：{self.follow_engine.single_max} 设置成功")
 
     def refresh_gateway_name(self):
         """"""

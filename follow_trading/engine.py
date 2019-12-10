@@ -1,14 +1,14 @@
 import pandas as pd
 
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from enum import Enum
 from copy import copy
 from dataclasses import dataclass
 
 from vnpy.event import EventEngine, Event
 from vnpy.trader.engine import BaseEngine, MainEngine
-from vnpy.trader.utility import load_json, save_json, get_folder_path
+from vnpy.trader.utility import load_json, save_json, get_folder_path, get_file_path
 from vnpy.trader.converter import OffsetConverter
 from vnpy.trader.constant import (
     OrderType,
@@ -60,6 +60,9 @@ APP_NAME = "FollowTrading"
 EVENT_FOLLOW_LOG = "eFollowLog"
 EVENT_FOLLOW_POS_DELTA = "eFollowPosDelta"
 
+PRE_MARKET_START = time(9, 30, 10)
+PRE_MARKET_END = time(9, 35)
+
 
 class FollowEngine(BaseEngine):
     """"""
@@ -78,6 +81,14 @@ class FollowEngine(BaseEngine):
         self.tick_add = 10
         self.inverse_follow = False
         self.order_type = OrderType.LIMIT
+
+        self.single_max = 1000
+        self.intraday_symbols = []
+        self.single_max_dict = {
+            "IF": 20,
+            "IC": 20,
+            "IH": 20
+        }
 
         # Test Mod
         self.run_type = FollowRunType.LIVE
@@ -103,6 +114,8 @@ class FollowEngine(BaseEngine):
 
         self.subscribed_symbols = set()
 
+        self.is_hedged_closed = False
+
         # Timeout auto cancel
         self.active_order_set = set()
         self.active_order_counter = {}
@@ -112,7 +125,10 @@ class FollowEngine(BaseEngine):
         # 保存的参数含有python对象，会引发异常
         self.parameters = ['source_gateway_name', 'target_gateway_name', 'filter_trade_timeout',
                            'cancel_order_timeout', 'multiples', 'tick_add', 'inverse_follow',
-                           'order_type', 'run_type', 'test_symbol']
+                           'order_type', 'run_type',
+                           'test_symbol', 'intraday_symbols',
+                           'single_max',
+                           'single_max_dict']
         self.variables = ['tradeid_orderids_dict', 'positions']
         self.clear_variables = ['tradeid_orderids_dict']
         self.pos_key = ['source_long', 'source_short', 'target_long', 'target_short']
@@ -275,6 +291,22 @@ class FollowEngine(BaseEngine):
         df.to_csv(trade_file_path, index=False, encoding='utf-8')
         self.write_log("成交记录保存成功")
 
+    def save_account_info(self):
+        """
+        Save account info to file every day
+        """
+        today = self.get_current_time().strftime('%Y%m%d')
+        account_file = get_file_path("account_info.csv")
+
+        account_text = ""
+        accounts = self.main_engine.get_all_accounts()
+        for account in accounts:
+            txt_ = f"{today},{account.accountid},{account.balance},{account.available}\n"
+            account_text += txt_
+        with open(account_file, "a+", encoding="utf-8") as f:
+            f.write(account_text)
+        self.write_log("账户信息保存成功")
+
     def update_tradeids(self):
         """
         Update received tradeids from main engine
@@ -283,6 +315,35 @@ class FollowEngine(BaseEngine):
         tradeids = [trade.vt_tradeid for trade in trades]
         self.vt_tradeids.update(set(tradeids))
         self.write_log("成交单列表更新成功")
+
+    def get_hedged_pos(self):
+        """"""
+        hedged_pos_dict = dict()
+        for vt_symbol, pos_dict in self.positions.items():
+            if not vt_symbol in self.intraday_symbols:
+                continue
+            hedged_pos = min(pos_dict['target_long'], pos_dict['target_short'])
+            if hedged_pos == 0:
+                continue
+            hedged_pos_dict[vt_symbol] = hedged_pos
+        return hedged_pos_dict
+            
+
+    def close_hedged_pos(self):
+        """
+        Close hedged pos which is in intraday mode.
+        But the cost(spread) may be too expensive.
+        """
+        if self.is_hedged_closed:
+            return
+
+        now_time = self.get_current_time().time()
+        if PRE_MARKET_START <= now_time <= PRE_MARKET_END:
+            for vt_symbol, hedged_pos in self.get_hedged_pos().items():
+                self.sell(vt_symbol, hedged_pos, market_price=True)
+                self.cover(vt_symbol, hedged_pos, market_price=True)
+                self.write_log(f"平已对冲仓位：{vt_symbol} 委托单已报")
+            self.is_hedged_closed = True
 
     def start(self):
         """
@@ -322,6 +383,9 @@ class FollowEngine(BaseEngine):
         if 15 <= now.hour < 21:
             print('Clear data of today')
             self.clear_follow_data()
+            # save account info
+            self.save_account_info()
+            pass
         else:
             self.save_follow_data()
         return True
@@ -354,6 +418,43 @@ class FollowEngine(BaseEngine):
         req.direction = Direction.SHORT if req.direction == Direction.LONG else Direction.LONG
         return req
 
+    @staticmethod
+    def close_to_open(req: OrderRequest):
+        """"""
+        req.offset = Offset.OPEN
+        return req
+
+    @staticmethod
+    def strip_digt(symbol: str):
+        res = ""
+        for char in symbol:
+            if not char.isdigit():
+                res += char
+            else:
+                break
+        return res
+
+    def split_req(self, req: OrderRequest):
+        """Split order if needed"""
+        symbol = self.strip_digt(req.symbol)
+        symbol_single_max = self.single_max_dict.get(symbol, self.single_max)
+        order_max = min(symbol_single_max, self.single_max)
+
+        if req.volume <= order_max:
+            return [req]
+        
+        max_count, remainder = divmod(req.volume, order_max)
+
+        req_max = copy(req)
+        req_max.volume = order_max
+        req_list = [req_max for i in range(max_count)]
+
+        if remainder:
+            req_r = copy(req)
+            req_r.volume = remainder
+            req_list.append(req_r)
+        return req_list
+
     def register_event(self):
         self.event_engine.register(EVENT_TICK, self.process_tick_event)
         self.event_engine.register(EVENT_ORDER, self.process_order_event)
@@ -378,10 +479,6 @@ class FollowEngine(BaseEngine):
 
         self.offset_converter.update_order(order)
 
-        # if not self.is_active:
-        #     # self.write_log("跟随系统未启动，目标账户委托单不做处理。")
-        #     # 这里有个bug，如果委托单还在挂单，然后关闭跟随了，委托单的状态就无法更新，即使已经撤单了，也无法从counter字典删除，这样就会不停的撤单
-        #     return
 
         # Filter non-follow order
         vt_orderid = order.vt_orderid
@@ -401,7 +498,7 @@ class FollowEngine(BaseEngine):
     def process_trade_event(self, event: Event):
         """"""
         trade = event.data
-        print(trade)
+        # print(trade)
 
         # Filter duplicate trade push if reconnect gateway for disconnected reason.
         if trade.vt_tradeid in self.vt_tradeids:
@@ -439,6 +536,7 @@ class FollowEngine(BaseEngine):
         self.cancel_timeout_order()
         # self.view_test_variables()
         self.refresh_pos()
+        self.close_hedged_pos()
 
     def process_position_event(self, event: Event):
         """
@@ -719,13 +817,14 @@ class FollowEngine(BaseEngine):
         contract = self.main_engine.get_contract(vt_symbol)
         if direction == Direction.LONG:
             price = ask_price if not price else price
-            if self.order_type == OrderType.MARKET:
+            # If market price type or market price in manual order (when price is set to -1)
+            if self.order_type == OrderType.MARKET or price == -1:
                 price = limit_price['limit_up']
             else:
                 price = min(limit_price['limit_up'], price + self.tick_add * contract.pricetick)
         else:
             price = bid_price if not price else price
-            if self.order_type == OrderType.MARKET:
+            if self.order_type == OrderType.MARKET or price == -1:
                 price = limit_price['limit_down']
             else:
                 price = max(limit_price['limit_down'], price - self.tick_add * contract.pricetick)
@@ -733,7 +832,9 @@ class FollowEngine(BaseEngine):
         return price
 
     def convert_trade_to_order_req(self, trade: TradeData):
-        """"""
+        """
+        Trade convert to order request
+        """
         if trade.offset == Offset.NONE:
             self.write_log(f"成交单{trade.vt_tradeid} offset为None，非CTP正常成交单")
             return
@@ -752,10 +853,16 @@ class FollowEngine(BaseEngine):
         )
 
         req.volume = req.volume * self.multiples
+
         if self.inverse_follow:
             req = self.inverse_req(req)
 
         if trade.offset != Offset.OPEN:
+            # T0 symbol close to open
+            if trade.vt_symbol in self.intraday_symbols:
+                return self.close_to_open(req)
+
+            # normal mode
             req.offset = Offset.CLOSE
             return self.validate_target_pos(req)
         else:
@@ -819,11 +926,14 @@ class FollowEngine(BaseEngine):
 
         vt_orderids = []
         for req in req_list:
-            vt_orderid = self.main_engine.send_order(req, self.target_gateway_name)
-            if not vt_orderid:
-                continue
-            vt_orderids.append(vt_orderid)
-            self.offset_converter.update_order_request(req, vt_orderid)
+            # split req
+            splited_req_list = self.split_req(req)
+            for splited_req in splited_req_list:
+                vt_orderid = self.main_engine.send_order(splited_req, self.target_gateway_name)
+                if not vt_orderid:
+                    continue
+                vt_orderids.append(vt_orderid)
+                self.offset_converter.update_order_request(splited_req, vt_orderid)
 
         return vt_orderids
 
@@ -932,7 +1042,8 @@ class FollowEngine(BaseEngine):
         direction: Direction,
         volume: int,
         price: float,
-        offset: Offset
+        offset: Offset,
+        market_price: bool
     ):
         """
         Create order request for sync pos.
@@ -951,27 +1062,30 @@ class FollowEngine(BaseEngine):
             offset=offset,
         )
 
+        if market_price:
+            req.price = -1
+
         # trade_id is required or it will be filtered, then pos can't be calculated correctly.
         time_id = f"{self.get_current_time().strftime('%H%M%S')}{str(self.get_current_time().microsecond // 1000)}"
         self.sync_order_ref += 1
         vt_tradeid = f"SYNC_{time_id}_{self.sync_order_ref}"
         self.send_order(req, vt_tradeid)
 
-    def buy(self, vt_symbol: str, volume: int, price: float = 0):
+    def buy(self, vt_symbol: str, volume: int, price: float = 0, market_price: bool = False):
         """"""
-        self.send_sync_order_req(vt_symbol, Direction.LONG, volume, price, Offset.OPEN)
+        self.send_sync_order_req(vt_symbol, Direction.LONG, volume, price, Offset.OPEN, market_price)
 
-    def short(self, vt_symbol: str, volume: int, price: float = 0):
+    def short(self, vt_symbol: str, volume: int, price: float = 0, market_price: bool = False):
         """"""
-        self.send_sync_order_req(vt_symbol, Direction.SHORT, volume, price, Offset.OPEN)
+        self.send_sync_order_req(vt_symbol, Direction.SHORT, volume, price, Offset.OPEN, market_price)
 
-    def sell(self, vt_symbol: str, volume: int, price: float = 0):
+    def sell(self, vt_symbol: str, volume: int, price: float = 0, market_price: bool = False):
         """"""
-        self.send_sync_order_req(vt_symbol, Direction.SHORT, volume, price, Offset.CLOSE)
+        self.send_sync_order_req(vt_symbol, Direction.SHORT, volume, price, Offset.CLOSE, market_price)
 
-    def cover(self, vt_symbol: str, volume: int, price: float = 0):
+    def cover(self, vt_symbol: str, volume: int, price: float = 0, market_price: bool = False):
         """"""
-        self.send_sync_order_req(vt_symbol, Direction.LONG, volume, price, Offset.CLOSE)
+        self.send_sync_order_req(vt_symbol, Direction.LONG, volume, price, Offset.CLOSE, market_price)
 
     def put_pos_delta_event(self, vt_symbol: str):
         """
