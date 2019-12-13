@@ -276,6 +276,12 @@ class FollowEngine(BaseEngine):
         trade_file_name = f"trade_{today}.csv"
         trade_file_path = trade_folder.joinpath(trade_file_name)
 
+        accounts = self.main_engine.get_all_accounts()
+        for account in accounts:
+            if account.gateway_name == self.source_gateway_name:
+                account_id = account.accountid
+                break
+
         trades = self.main_engine.get_all_trades()
         trade_list = []
         for trade in trades:
@@ -284,6 +290,8 @@ class FollowEngine(BaseEngine):
             d["direction"] = d["direction"].value
             d["offset"] = d["offset"].value
             d['dt'] = f"{today} {d['time']}"
+            d['date'] = f"{today}"
+            d['source_account'] = account_id
             d.pop("vt_symbol")
 
             trade_list.append(d)
