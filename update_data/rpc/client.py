@@ -1,4 +1,5 @@
 import json
+import traceback
 from multiprocessing.connection import Client
 
 
@@ -19,9 +20,14 @@ class RpcClient:
         self.authkey = authkey
 
     def connect(self):
-        self._connection = Client(address=(self.host, self.port), authkey=self.authkey)
-        rep = self.connect_test()
-        print(rep)
+        try:
+            self._connection = Client(address=(self.host, self.port), authkey=self.authkey)
+            rep = self.connect_test()
+            print(rep)
+        except:
+            if self._connection:
+                self.close()
+            traceback.print_exc()
 
     def close(self):
         self._connection.close()
@@ -39,19 +45,3 @@ class RpcClient:
                 raise RemoteException(rep[1])
 
         return do_rpc
-
-
-if __name__ == "__main__":
-    client = RpcClient()
-    client.connect()
-
-
-    def echo_test(*args, **kwargs):
-        res = client.echo_test(*args, **kwargs)
-        print(type(res), res)
-
-
-    echo_test("hello")
-    echo_test(123)
-    echo_test([1, 2, 2])
-    echo_test({'a': 1})
