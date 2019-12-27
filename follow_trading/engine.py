@@ -62,6 +62,7 @@ EVENT_FOLLOW_POS_DELTA = "eFollowPosDelta"
 
 PRE_MARKET_START = time(9, 30, 10)
 PRE_MARKET_END = time(9, 35)
+MARKET_END = time(15, 1)
 
 
 class FollowEngine(BaseEngine):
@@ -115,6 +116,8 @@ class FollowEngine(BaseEngine):
         self.subscribed_symbols = set()
 
         self.is_hedged_closed = False
+
+        self.is_trade_saved = False
 
         # Timeout auto cancel
         self.active_order_set = set()
@@ -353,6 +356,16 @@ class FollowEngine(BaseEngine):
                 self.write_log(f"平已对冲仓位：{vt_symbol} 委托单已报")
             self.is_hedged_closed = True
 
+    def auto_save_trade(self):
+        if self.is_trade_saved:
+            return
+
+        now_time = self.get_current_time().time()
+        if now_time >= MARKET_END:
+            self.save_trade()
+            self.is_trade_saved = True
+
+
     def start(self):
         """
         Start follow trading.
@@ -545,6 +558,8 @@ class FollowEngine(BaseEngine):
         # self.view_test_variables()
         self.refresh_pos()
         self.close_hedged_pos()
+        self.auto_save_trade()
+        
 
     def process_position_event(self, event: Event):
         """
