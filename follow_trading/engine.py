@@ -62,7 +62,7 @@ EVENT_FOLLOW_POS_DELTA = "eFollowPosDelta"
 
 PRE_MARKET_START = time(9, 30, 10)
 PRE_MARKET_END = time(9, 35)
-MARKET_END = time(15, 1)
+MARKET_END = time(15, 2)
 
 
 class FollowEngine(BaseEngine):
@@ -360,9 +360,12 @@ class FollowEngine(BaseEngine):
         if self.is_trade_saved:
             return
 
-        now_time = self.get_current_time().time()
+        now_time = datetime.now().time()
         if now_time >= MARKET_END:
             self.save_trade()
+            self.clear_follow_data()
+            self.save_account_info()
+
             self.is_trade_saved = True
 
 
@@ -400,13 +403,12 @@ class FollowEngine(BaseEngine):
         self.save_trade()
 
         now = self.get_current_time()
-        print("stop now:", now)
+        # print("stop now:", now)
         if 15 <= now.hour < 21:
-            print('Clear data of today')
+            # print('Clear data of today')
             self.clear_follow_data()
             # save account info
             self.save_account_info()
-            pass
         else:
             self.save_follow_data()
         return True
