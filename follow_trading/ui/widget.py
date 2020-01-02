@@ -46,8 +46,8 @@ class FollowManager(QtWidgets.QWidget):
     def init_ui(self):
         """"""
         self.setWindowTitle("跟随交易")
-        self.setMinimumSize(1024, 768)
-        self.setMaximumSize(1440, 900)
+        self.setMinimumSize(1440, 900)
+        self.setMaximumSize(1920, 1080)
 
         # create widgets
         self.start_button = QtWidgets.QPushButton("启动")
@@ -317,10 +317,13 @@ class PosDeltaMonitor(BaseMonitor):
         "vt_symbol": {"display": "合约代码", "cell": BaseCell, "update": False},
         "source_long": {"display": "源账户多仓", "cell": BidCell, "update": True},
         "source_short": {"display": "源账户空仓", "cell": AskCell, "update": True},
+        "source_net": {"display": "源账户净仓", "cell": BaseCell, "update": True},
         "target_long": {"display": "目标户多仓", "cell": BidCell, "update": True},
         "target_short": {"display": "目标户空仓", "cell": AskCell, "update": True},
+        "target_net": {"display": "目标户净仓", "cell": BaseCell, "update": True},
         "long_delta": {"display": "多头仓差", "cell": BaseCell, "update": True},
         "short_delta": {"display": "空头仓差", "cell": BaseCell, "update": True},
+        "net_delta": {"display": "净仓差", "cell": BaseCell, "update": True},
     }
 
 
