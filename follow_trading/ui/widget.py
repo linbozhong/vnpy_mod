@@ -46,7 +46,7 @@ class FollowManager(QtWidgets.QWidget):
     def init_ui(self):
         """"""
         self.setWindowTitle("跟随交易")
-        self.setMinimumSize(1440, 900)
+        self.setMinimumSize(1280, 800)
         self.setMaximumSize(1920, 1080)
 
         # create widgets
@@ -69,12 +69,16 @@ class FollowManager(QtWidgets.QWidget):
         self.sync_all_button = QtWidgets.QPushButton("所有持仓同步")
         self.sync_all_button.clicked.connect(self.sync_all)
 
+        self.sync_net_button = QtWidgets.QPushButton("日内模式净仓同步")
+        self.sync_net_button.clicked.connect(self.sync_net_delta)
+
         for btn in [self.start_button,
                     self.stop_button,
                     self.sync_open_button,
                     self.sync_close_button,
                     self.sync_button,
-                    self.sync_all_button]:
+                    self.sync_all_button,
+                    self.sync_net_button]:
             btn.setFixedHeight(btn.sizeHint().height() * 2)
 
         gateways = self.follow_engine.get_connected_gateway_names()
@@ -133,6 +137,7 @@ class FollowManager(QtWidgets.QWidget):
         form_sync.addRow(self.sync_close_button)
         form_sync.addRow(self.sync_button)
         form_sync.addRow(self.sync_all_button)
+        form_sync.addRow(self.sync_net_button)
 
         vbox = QtWidgets.QVBoxLayout()
         vbox.addLayout(form)
@@ -292,6 +297,11 @@ class FollowManager(QtWidgets.QWidget):
         """"""
         self.follow_engine.sync_all_pos()
 
+    def sync_net_delta(self):
+        vt_symbol = self.sync_symbol
+        if self.validate_vt_symbol(vt_symbol):
+            self.follow_engine.sync_net_pos_delta(vt_symbol)
+
     def write_log(self, msg: str):
         """"""
         self.follow_engine.write_log(msg)
@@ -326,6 +336,9 @@ class PosDeltaMonitor(BaseMonitor):
         "net_delta": {"display": "净仓差", "cell": BaseCell, "update": True},
     }
 
+    def init_ui(self):
+        super(PosDeltaMonitor, self).init_ui()
+        self.resize_columns()
 
 class LogMonitor(BaseMonitor):
     """

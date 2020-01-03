@@ -120,7 +120,7 @@ class FollowEngine(BaseEngine):
         self.due_out_req_list = []
         self.refresh_pos_interval = 0
 
-        self.subscribed_symbols = set()
+        # self.subscribed_symbols = set()
 
         self.is_hedged_closed = False
 
@@ -587,28 +587,12 @@ class FollowEngine(BaseEngine):
         Pre subscribe symbol in source gateway position to speed up following.
         """
         vt_symbol = position.vt_symbol
-        if vt_symbol not in self.subscribed_symbols:
+        if not self.is_price_inited(vt_symbol):
             if self.subscribe(vt_symbol):
-                self.write_log(f"仓位合约{vt_symbol}订阅成功")
-                self.subscribed_symbols.add(vt_symbol)
+                self.write_log(f"仓位合约{vt_symbol}预订阅成功")
+                # self.subscribed_symbols.add(vt_symbol)
             else:
-                self.write_log(f"仓位合约{vt_symbol}订阅失败")
-
-    def send_queue_order(self):
-        """
-        Send order in queue after limited price is ready.
-        """
-        if not self.due_out_req_list:
-            return
-
-        for req_tuple in copy(self.due_out_req_list):
-            vt_tradeid, req = req_tuple
-            if not self.is_price_inited(req.vt_symbol):
-                print('Limit unready in send queue order event')
-                continue
-
-            self.send_and_record(req, vt_tradeid)
-            self.due_out_req_list.remove(req_tuple)
+                self.write_log(f"仓位合约{vt_symbol}预订阅失败")
 
     def cancel_timeout_order(self):
         """
@@ -888,18 +872,17 @@ class FollowEngine(BaseEngine):
             price=trade.price,
             offset=trade.offset
         )
-
         req.volume = req.volume * self.multiples
 
         if self.inverse_follow:
             req = self.inverse_req(req)
 
-        if trade.offset != Offset.OPEN:
-            # T0 symbol use lock mode
-            if self.strip_digit(trade.vt_symbol) in self.intraday_symbols:
-                return req
+        # T0 symbol use lock mode, redirect.
+        if self.strip_digit(trade.vt_symbol) in self.intraday_symbols:
+            return req
 
-            # normal mode
+        # Normal mode, check position if close
+        if trade.offset != Offset.OPEN:
             req.offset = Offset.CLOSE
             return self.validate_target_pos(req)
         else:
@@ -920,17 +903,38 @@ class FollowEngine(BaseEngine):
         vt_tradeid: str
     ):
         """
-        Send order and save data.
+        Send order to order queue.
         """
         # limited_prices = self.limited_prices.get(req.vt_symbol, None)
-        if self.is_price_inited(req.vt_symbol):
-            print('Limit price ok.')
-            self.send_and_record(req, vt_tradeid)
-        else:
-            print('Limit price unready.')
-            # Subscribe after validated to get limit price.
+        # if self.is_price_inited(req.vt_symbol):
+        #     print('Limit price ok.')
+        #     self.send_and_record(req, vt_tradeid)
+        # else:
+        #     print('Limit price unready.')
+        #     # Subscribe after validated to get limit price.
+        #     self.subscribe(req.vt_symbol)
+        #     self.due_out_req_list.append((vt_tradeid, req))
+
+        if not self.is_price_inited(req.vt_symbol):
             self.subscribe(req.vt_symbol)
-            self.due_out_req_list.append((vt_tradeid, req))
+            self.write_log(f"订阅合约{req.vt_symbol}")
+        self.due_out_req_list.append((vt_tradeid, req))
+
+    def send_queue_order(self):
+        """
+        Send order in queue after limited price is ready.
+        """
+        if not self.due_out_req_list:
+            return
+
+        for req_tuple in copy(self.due_out_req_list):
+            vt_tradeid, req = req_tuple
+            if not self.is_price_inited(req.vt_symbol):
+                print('Limit unready in send queue order event')
+                continue
+
+            self.send_and_record(req, vt_tradeid)
+            self.due_out_req_list.remove(req_tuple)
 
     def send_and_record(
         self,
@@ -1033,17 +1037,19 @@ class FollowEngine(BaseEngine):
 
     def sync_net_pos_delta(self, vt_symbol: str):
         net_pos_delta = self.get_net_pos_delta(vt_symbol)
-        if net_pos_delta > 0:
-            self.buy(vt_symbol, net_pos_delta)
-        elif net_pos_delta < 0:
-            self.short(vt_symbol, abs(net_pos_delta))
-        else:
-            return
+        if self.strip_digit(vt_symbol) in self.intraday_symbols:
+            if net_pos_delta > 0:
+                self.buy(vt_symbol, net_pos_delta)
+            elif net_pos_delta < 0:
+                self.short(vt_symbol, abs(net_pos_delta))
+            else:
+                self.write_log(f"{vt_symbol}无净仓差，无需同步")
+                return
 
     def sync_open_pos(self, vt_symbol: str):
         """"""
         if self.strip_digit(vt_symbol) in self.intraday_symbols:
-            self.write_log(f"{vt_symbol}是日内模式，不进行开仓同步")
+            self.write_log(f"{vt_symbol}是日内模式，只支持同步净仓")
             return
 
         if self.is_pos_exists(vt_symbol):
@@ -1064,7 +1070,7 @@ class FollowEngine(BaseEngine):
     def sync_close_pos(self, vt_symbol: str):
         """"""
         if self.strip_digit(vt_symbol) in self.intraday_symbols:
-            self.write_log(f"{vt_symbol}是日内模式，不进行平仓同步")
+            self.write_log(f"{vt_symbol}是日内模式，只支持同步净仓")
             return
 
         if self.is_pos_exists(vt_symbol):
@@ -1084,10 +1090,6 @@ class FollowEngine(BaseEngine):
 
     def sync_pos(self, vt_symbol: str):
         """Sync position between source and target by vt_symbol"""
-        if self.strip_digit(vt_symbol) in self.intraday_symbols:
-            self.write_log(f"{vt_symbol}是日内模式，不进行普通同步")
-            return
-
         if self.is_pos_exists(vt_symbol):
             long_pos_delta, short_pos_delta = self.get_pos_delta(vt_symbol)
             if long_pos_delta == short_pos_delta == 0:
@@ -1100,9 +1102,6 @@ class FollowEngine(BaseEngine):
     def sync_all_pos(self):
         """Sync pos of all non-empty contract"""
         for vt_symbol in list(self.positions.keys()):
-            if self.strip_digit(vt_symbol) in self.intraday_symbols:
-                self.write_log(f"{vt_symbol}是日内模式，不进行普通同步")
-                continue
             self.sync_pos(vt_symbol)
 
     def send_sync_order_req(
@@ -1165,7 +1164,7 @@ class FollowEngine(BaseEngine):
             pos_dict = copy(pos_dict)
             pos_dict['vt_symbol'] = vt_symbol
             pos_dict['long_delta'], pos_dict['short_delta'] = self.get_pos_delta(vt_symbol)
-            pos_dict['net_delta'] = 0
+            pos_dict['net_delta'] = self.get_net_pos_delta(vt_symbol)
 
             pos_data = PosDeltaData()
             pos_data.__dict__ = pos_dict
