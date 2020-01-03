@@ -66,6 +66,7 @@ EVENT_FOLLOW_POS_DELTA = "eFollowPosDelta"
 PRE_MARKET_START = time(9, 30, 10)
 PRE_MARKET_END = time(9, 35)
 DAYLIGHT_MARKET_END = time(15, 2)
+NIGHT_MARKET_BEGIN = time(20, 45)
 
 
 class FollowEngine(BaseEngine):
@@ -375,7 +376,7 @@ class FollowEngine(BaseEngine):
             return
 
         now_time = datetime.now().time()
-        if now_time >= DAYLIGHT_MARKET_END:
+        if NIGHT_MARKET_BEGIN > now_time >= DAYLIGHT_MARKET_END:
             self.save_trade()
             self.clear_follow_data()
             self.save_account_info()
@@ -411,16 +412,15 @@ class FollowEngine(BaseEngine):
         self.write_log("跟随交易停止")
 
         self.save_follow_setting()
+        self.save_follow_data()
         self.clear_empty_pos()
 
         self.save_trade()
 
         now_time = datetime.now().time()
-        if now_time >= DAYLIGHT_MARKET_END:
+        if NIGHT_MARKET_BEGIN > now_time >= DAYLIGHT_MARKET_END:
             self.clear_follow_data()
             self.save_account_info()
-        else:
-            self.save_follow_data()
         return True
 
     def close(self):
