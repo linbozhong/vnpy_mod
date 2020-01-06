@@ -45,6 +45,7 @@ class PosDeltaData:
     long_delta: int = 0
     short_delta: int = 0
     net_delta: int = 0
+    basic_delta: int = 0
 
 
 class FollowRunType(Enum):
@@ -144,7 +145,7 @@ class FollowEngine(BaseEngine):
         self.variables = ['tradeid_orderids_dict', 'positions']
         self.clear_variables = ['tradeid_orderids_dict']
         self.pos_key = ['source_long', 'source_short', 'source_net',
-                        'target_long', 'target_short', 'target_net', 'net_delta']
+                        'target_long', 'target_short', 'target_net', 'net_delta', 'basic_delta']
 
         # 载入数据
         self.load_data()
@@ -781,12 +782,18 @@ class FollowEngine(BaseEngine):
 
     def filter_target_trade(self, trade: TradeData):
         """"""
+        for sub_list in self.tradeid_orderids_dict.values():
+            for orderid in sub_list:
+                if trade.vt_orderid == orderid:
+                    return trade
+        return
+
         # Filter Non-follow trade
-        orderids = [orderid for sub_list in self.tradeid_orderids_dict.values() for orderid in sub_list]
-        if trade.vt_orderid not in orderids:
-            self.write_log(f"成交单{trade.vt_tradeid} 不是跟随策略的成交单。")
-            return
-        return trade
+        # orderids = [orderid for sub_list in self.tradeid_orderids_dict.values() for orderid in sub_list]
+        # if trade.vt_orderid not in orderids:
+        #     self.write_log(f"成交单{trade.vt_tradeid} 不是跟随策略的成交单。")
+        #     return
+        # return trade
 
     def validate_target_pos(self, req: OrderRequest):
         """
@@ -1031,20 +1038,37 @@ class FollowEngine(BaseEngine):
         return long_pos_delta, short_pos_delta
 
     def get_net_pos_delta(self, vt_symbol: str):
+        """
+        Calculate net pos. If not sync basic position, it need adjust by basic pos.
+        """
         symbol_pos = self.positions.get(vt_symbol, None)
+        # symbol_pos['net_delta'] = symbol_pos['source_net'] * self.multiples - symbol_pos['target_net']
         net_pos_delta = symbol_pos['net_delta'] if not self.inverse_follow else (- symbol_pos['net_delta'])
         return net_pos_delta
 
-    def sync_net_pos_delta(self, vt_symbol: str):
-        net_pos_delta = self.get_net_pos_delta(vt_symbol)
+    def sync_net_pos_delta(self, vt_symbol: str, is_sync_basic: bool = False):
+        """
+        If contract is intra-day mode. Only can sync by net pos.
+        """
         if self.strip_digit(vt_symbol) in self.intraday_symbols:
+            symbol_pos = self.positions.get(vt_symbol, None)
+            net_pos_delta = self.get_net_pos_delta(vt_symbol)
+            if not is_sync_basic:
+                net_pos_delta = net_pos_delta - symbol_pos['basic_delta']
+
+            market_price = True if is_sync_basic else False
             if net_pos_delta > 0:
-                self.buy(vt_symbol, net_pos_delta)
+                self.buy(vt_symbol, net_pos_delta, market_price, is_sync_basic)
             elif net_pos_delta < 0:
-                self.short(vt_symbol, abs(net_pos_delta))
+                self.short(vt_symbol, abs(net_pos_delta), market_price, is_sync_basic)
             else:
                 self.write_log(f"{vt_symbol}无净仓差，无需同步")
                 return
+            
+            if is_sync_basic:
+                symbol_pos = self.positions.get(vt_symbol, None)
+                symbol_pos['basic_delta'] = 0
+
 
     def sync_open_pos(self, vt_symbol: str):
         """"""
@@ -1111,7 +1135,8 @@ class FollowEngine(BaseEngine):
         volume: int,
         price: float,
         offset: Offset,
-        market_price: bool
+        market_price: bool,
+        is_basic: bool
     ):
         """
         Create order request for sync pos.
@@ -1133,27 +1158,30 @@ class FollowEngine(BaseEngine):
         if market_price:
             req.price = -1
 
+
+        sync_flag = "SYNC_BASIC" if is_basic else "SYNC"
+
         # trade_id is required or it will be filtered, then pos can't be calculated correctly.
         time_id = f"{self.get_current_time().strftime('%H%M%S')}{str(self.get_current_time().microsecond // 1000)}"
         self.sync_order_ref += 1
-        vt_tradeid = f"SYNC_{time_id}_{self.sync_order_ref}"
+        vt_tradeid = f"{sync_flag}_{time_id}_{self.sync_order_ref}"
         self.send_order(req, vt_tradeid)
 
-    def buy(self, vt_symbol: str, volume: int, price: float = 0, market_price: bool = False):
+    def buy(self, vt_symbol: str, volume: int, price: float = 0, market_price: bool = False, is_basic: bool = False):
         """"""
-        self.send_sync_order_req(vt_symbol, Direction.LONG, volume, price, Offset.OPEN, market_price)
+        self.send_sync_order_req(vt_symbol, Direction.LONG, volume, price, Offset.OPEN, market_price, is_basic)
 
-    def short(self, vt_symbol: str, volume: int, price: float = 0, market_price: bool = False):
+    def short(self, vt_symbol: str, volume: int, price: float = 0, market_price: bool = False, is_basic: bool = False):
         """"""
-        self.send_sync_order_req(vt_symbol, Direction.SHORT, volume, price, Offset.OPEN, market_price)
+        self.send_sync_order_req(vt_symbol, Direction.SHORT, volume, price, Offset.OPEN, market_price, is_basic)
 
-    def sell(self, vt_symbol: str, volume: int, price: float = 0, market_price: bool = False):
+    def sell(self, vt_symbol: str, volume: int, price: float = 0, market_price: bool = False, is_basic: bool = False):
         """"""
-        self.send_sync_order_req(vt_symbol, Direction.SHORT, volume, price, Offset.CLOSE, market_price)
+        self.send_sync_order_req(vt_symbol, Direction.SHORT, volume, price, Offset.CLOSE, market_price, is_basic)
 
-    def cover(self, vt_symbol: str, volume: int, price: float = 0, market_price: bool = False):
+    def cover(self, vt_symbol: str, volume: int, price: float = 0, market_price: bool = False, is_basic: bool = False):
         """"""
-        self.send_sync_order_req(vt_symbol, Direction.LONG, volume, price, Offset.CLOSE, market_price)
+        self.send_sync_order_req(vt_symbol, Direction.LONG, volume, price, Offset.CLOSE, market_price, is_basic)
 
     def put_pos_delta_event(self, vt_symbol: str):
         """

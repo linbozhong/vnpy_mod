@@ -7,6 +7,7 @@ from vnpy.trader.ui.widget import (
     TimeCell,
     BidCell,
     AskCell,
+    PnlCell,
     BaseMonitor
 )
 
@@ -46,7 +47,7 @@ class FollowManager(QtWidgets.QWidget):
     def init_ui(self):
         """"""
         self.setWindowTitle("跟随交易")
-        self.setMinimumSize(1280, 800)
+        self.setMinimumSize(1280, 900)
         self.setMaximumSize(1920, 1080)
 
         # create widgets
@@ -69,8 +70,11 @@ class FollowManager(QtWidgets.QWidget):
         self.sync_all_button = QtWidgets.QPushButton("所有持仓同步")
         self.sync_all_button.clicked.connect(self.sync_all)
 
-        self.sync_net_button = QtWidgets.QPushButton("日内模式净仓同步")
-        self.sync_net_button.clicked.connect(self.sync_net_delta)
+        self.sync_net_button = QtWidgets.QPushButton("日内交易同步")
+        self.sync_net_button.clicked.connect(lambda: self.sync_net_delta(is_sync_baisc=False))
+
+        self.sync_basic_button = QtWidgets.QPushButton("日内底仓同步")
+        self.sync_basic_button.clicked.connect(lambda: self.sync_net_delta(is_sync_baisc=True))
 
         for btn in [self.start_button,
                     self.stop_button,
@@ -78,7 +82,8 @@ class FollowManager(QtWidgets.QWidget):
                     self.sync_close_button,
                     self.sync_button,
                     self.sync_all_button,
-                    self.sync_net_button]:
+                    self.sync_net_button,
+                    self.sync_basic_button]:
             btn.setFixedHeight(btn.sizeHint().height() * 2)
 
         gateways = self.follow_engine.get_connected_gateway_names()
@@ -138,6 +143,7 @@ class FollowManager(QtWidgets.QWidget):
         form_sync.addRow(self.sync_button)
         form_sync.addRow(self.sync_all_button)
         form_sync.addRow(self.sync_net_button)
+        form_sync.addRow(self.sync_basic_button)
 
         vbox = QtWidgets.QVBoxLayout()
         vbox.addLayout(form)
@@ -297,10 +303,10 @@ class FollowManager(QtWidgets.QWidget):
         """"""
         self.follow_engine.sync_all_pos()
 
-    def sync_net_delta(self):
+    def sync_net_delta(self, is_sync_baisc: bool):
         vt_symbol = self.sync_symbol
         if self.validate_vt_symbol(vt_symbol):
-            self.follow_engine.sync_net_pos_delta(vt_symbol)
+            self.follow_engine.sync_net_pos_delta(vt_symbol, is_sync_baisc)
 
     def write_log(self, msg: str):
         """"""
@@ -327,13 +333,14 @@ class PosDeltaMonitor(BaseMonitor):
         "vt_symbol": {"display": "合约代码", "cell": BaseCell, "update": False},
         "source_long": {"display": "源账户多仓", "cell": BidCell, "update": True},
         "source_short": {"display": "源账户空仓", "cell": AskCell, "update": True},
-        "source_net": {"display": "源账户净仓", "cell": BaseCell, "update": True},
+        "source_net": {"display": "源账户净仓", "cell": PnlCell, "update": True},
         "target_long": {"display": "目标户多仓", "cell": BidCell, "update": True},
         "target_short": {"display": "目标户空仓", "cell": AskCell, "update": True},
-        "target_net": {"display": "目标户净仓", "cell": BaseCell, "update": True},
+        "target_net": {"display": "目标户净仓", "cell": PnlCell, "update": True},
         "long_delta": {"display": "多头仓差", "cell": BaseCell, "update": True},
         "short_delta": {"display": "空头仓差", "cell": BaseCell, "update": True},
-        "net_delta": {"display": "净仓差", "cell": BaseCell, "update": True},
+        "net_delta": {"display": "净仓差", "cell": PnlCell, "update": True},
+        "basic_delta": {"display": "底仓差", "cell": PnlCell, "update": True}
     }
 
     def init_ui(self):
