@@ -15,7 +15,12 @@ from vnpy.trader.constant import (
     OrderType
 )
 
-from ..engine import APP_NAME, EVENT_FOLLOW_LOG, EVENT_FOLLOW_POS_DELTA
+from ..engine import (
+    APP_NAME,
+    FollowEngine,
+    EVENT_FOLLOW_LOG,
+    EVENT_FOLLOW_POS_DELTA
+)
 
 
 class ComboBox(QtWidgets.QComboBox):
@@ -76,6 +81,9 @@ class FollowManager(QtWidgets.QWidget):
         self.sync_basic_button = QtWidgets.QPushButton("日内底仓同步")
         self.sync_basic_button.clicked.connect(lambda: self.sync_net_delta(is_sync_baisc=True))
 
+        self.modify_pos_button = QtWidgets.QPushButton("手动修改仓位")
+        self.modify_pos_button.clicked.connect(self.manual_modify_pos)
+
         for btn in [self.start_button,
                     self.stop_button,
                     self.sync_open_button,
@@ -83,7 +91,8 @@ class FollowManager(QtWidgets.QWidget):
                     self.sync_button,
                     self.sync_all_button,
                     self.sync_net_button,
-                    self.sync_basic_button]:
+                    self.sync_basic_button,
+                    self.modify_pos_button]:
             btn.setFixedHeight(btn.sizeHint().height() * 2)
 
         gateways = self.follow_engine.get_connected_gateway_names()
@@ -144,6 +153,7 @@ class FollowManager(QtWidgets.QWidget):
         form_sync.addRow(self.sync_all_button)
         form_sync.addRow(self.sync_net_button)
         form_sync.addRow(self.sync_basic_button)
+        form_sync.addRow(self.modify_pos_button)
 
         vbox = QtWidgets.QVBoxLayout()
         vbox.addLayout(form)
@@ -308,6 +318,10 @@ class FollowManager(QtWidgets.QWidget):
         if self.validate_vt_symbol(vt_symbol):
             self.follow_engine.sync_net_pos_delta(vt_symbol, is_sync_baisc)
 
+    def manual_modify_pos(self):
+        dialog = PosEditor(self.follow_engine)
+        dialog.exec_()
+
     def write_log(self, msg: str):
         """"""
         self.follow_engine.write_log(msg)
@@ -367,3 +381,85 @@ class LogMonitor(BaseMonitor):
     def insert_new_row(self, data):
         super(LogMonitor, self).insert_new_row(data)
         self.resizeRowToContents(0)
+
+
+class PosEditor(QtWidgets.QDialog):
+    def __init__(self, follow_engine: FollowEngine):
+        super().__init__()
+
+        self.follow_engine = follow_engine
+        self.modify_symbol = ""
+
+        self.init_ui()
+
+
+    def init_ui(self):
+        self.setWindowTitle("手动修改仓位")
+
+        self.symbol_combo = ComboBox()
+        self.symbol_combo.pop_show.connect(self.refresh_symbol_list)
+        self.symbol_combo.activated[str].connect(self.set_modify_symbol)
+
+        validator = QtGui.QIntValidator()
+
+        self.long_pos_line = QtWidgets.QLineEdit()
+        self.long_pos_line.setValidator(validator)
+
+        self.short_pos_line = QtWidgets.QLineEdit()
+        self.short_pos_line.setValidator(validator)
+
+        self.basic_delta_line = QtWidgets.QLineEdit()
+        self.basic_delta_line.setValidator(validator)
+
+        button_modify = QtWidgets.QPushButton("修改")
+        button_modify.clicked.connect(self.modify)
+
+        form = QtWidgets.QFormLayout()
+        form.addRow("合约代码", self.symbol_combo)
+        form.addRow("目标户多仓", self.long_pos_line)
+        form.addRow("目标户空仓", self.short_pos_line)
+        form.addRow("底仓差", self.basic_delta_line)
+
+        hbox = QtWidgets.QHBoxLayout()
+        hbox.addWidget(button_modify)
+
+        vbox = QtWidgets.QVBoxLayout()
+        vbox.addLayout(form)
+        vbox.addLayout(hbox)
+
+        self.setLayout(vbox)
+
+
+    def set_modify_symbol(self, vt_symbol: str):
+        """
+        Set symbol to be modified
+        """
+        self.modify_symbol = vt_symbol
+        target_long = self.follow_engine.get_pos(vt_symbol, 'target_long')
+        target_short = self.follow_engine.get_pos(vt_symbol, 'target_short')
+        basic_delta = self.follow_engine.get_pos(vt_symbol, 'basic_delta')
+
+        self.basic_delta_line.setText(str(basic_delta))
+        self.long_pos_line.setText(str(target_long))
+        self.short_pos_line.setText(str(target_short))
+        self.write_log(f"选中合约{self.modify_symbol}")
+
+    def refresh_symbol_list(self):
+        """"""
+        self.symbol_combo.clear()
+        symbol_list = list(self.follow_engine.get_positions().keys())
+        self.symbol_combo.addItems(symbol_list)
+
+    def modify(self):
+        """"""
+        new_basic_delta = self.basic_delta_line.text()
+        new_long = self.long_pos_line.text()
+        new_short = self.short_pos_line.text()
+        self.follow_engine.set_pos(self.modify_symbol, 'basic_delta', int(new_basic_delta))
+        self.follow_engine.set_pos(self.modify_symbol, 'target_long', int(new_long))
+        self.follow_engine.set_pos(self.modify_symbol, 'target_short', int(new_short))
+        self.write_log(f"{self.modify_symbol}仓位修改成功")
+
+    def write_log(self, msg: str):
+        """"""
+        self.follow_engine.write_log(msg)
