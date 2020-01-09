@@ -458,6 +458,7 @@ class PosEditor(QtWidgets.QDialog):
         self.follow_engine.set_pos(self.modify_symbol, 'basic_delta', int(new_basic_delta))
         self.follow_engine.set_pos(self.modify_symbol, 'target_long', int(new_long))
         self.follow_engine.set_pos(self.modify_symbol, 'target_short', int(new_short))
+        self.follow_engine.save_follow_data()
         self.write_log(f"{self.modify_symbol}仓位修改成功")
 
     def write_log(self, msg: str):
