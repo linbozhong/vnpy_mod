@@ -1,3 +1,4 @@
+import pickle
 import pandas as pd
 
 from collections import defaultdict
@@ -393,6 +394,7 @@ class FollowEngine(BaseEngine):
         self.clear_empty_pos()
 
         self.save_trade()
+        self.save_contract()
 
         now_time = datetime.now().time()
         if NIGHT_MARKET_BEGIN > now_time >= DAYLIGHT_MARKET_END:
@@ -405,6 +407,14 @@ class FollowEngine(BaseEngine):
         Close engine.
         """
         self.stop()
+
+    def save_contract(self):
+        """"""
+        contracts = self.main_engine.get_all_contracts()
+        filepath = get_file_path('contracts.data')
+        with open(filepath, 'wb') as f:
+            pickle.dump(contracts, f)
+        self.write_log(f"当日合约数据保存成功")
 
     @staticmethod
     def get_trade_type(trade: TradeData):
@@ -551,8 +561,8 @@ class FollowEngine(BaseEngine):
         """
         position = event.data
 
+        self.pre_subscribe(position)
         if position.gateway_name == self.source_gateway_name:
-            self.pre_subscribe(position)
             self.update_source_pos(position)
         else:
             self.offset_converter.update_position(position)
