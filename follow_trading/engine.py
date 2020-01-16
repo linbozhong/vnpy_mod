@@ -561,7 +561,8 @@ class FollowEngine(BaseEngine):
         """
         position = event.data
 
-        self.pre_subscribe(position)
+        if self.is_active:
+            self.pre_subscribe(position)
         if position.gateway_name == self.source_gateway_name:
             self.update_source_pos(position)
         else:
@@ -600,6 +601,7 @@ class FollowEngine(BaseEngine):
         """
         if self.refresh_pos_interval > 4:
             for vt_symbol in self.positions:
+                # print('refresh', vt_symbol)
                 self.put_pos_delta_event(vt_symbol)
             self.refresh_pos_interval = 0
         self.refresh_pos_interval += 1
@@ -1008,6 +1010,7 @@ class FollowEngine(BaseEngine):
         Calculate net pos. If not sync basic position, it need adjust by basic pos.
         """
         symbol_pos = self.positions.get(vt_symbol, None)
+        symbol_pos['net_delta'] = symbol_pos['source_net'] * self.multiples - symbol_pos['target_net']
         net_pos_delta = symbol_pos['net_delta'] if not self.inverse_follow else (- symbol_pos['net_delta'])
         return net_pos_delta
 
