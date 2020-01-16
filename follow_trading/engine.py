@@ -1177,6 +1177,22 @@ class FollowEngine(BaseEngine):
         """"""
         self.send_sync_order_req(vt_symbol, Direction.LONG, volume, price, Offset.CLOSE, market_price, is_basic)
 
+
+    def close_hedged_pos(self, vt_symbol: str, pos: int):
+        """
+        Close hedged pos.
+        """
+        symbol_pos = self.positions.get(vt_symbol, None)
+        if symbol_pos:
+            avaiable = min(symbol_pos['target_long'], symbol_pos['target_short'])
+            if pos <= avaiable:
+                self.sell(vt_symbol, pos, market_price=True)
+                self.cover(vt_symbol, pos, market_price=True)
+                self.write_log(f"已对冲仓位平仓委托单已报，合约：{vt_symbol}，手数：{pos} ")
+            else:
+                self.write_log(f"平仓手数超出最大已对冲仓位")
+
+
     def put_pos_delta_event(self, vt_symbol: str):
         """
         Calculate delta pos and put event

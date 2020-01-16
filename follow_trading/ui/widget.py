@@ -52,7 +52,7 @@ class FollowManager(QtWidgets.QWidget):
     def init_ui(self):
         """"""
         self.setWindowTitle("跟随交易")
-        self.setMinimumSize(1280, 900)
+        self.setMinimumSize(1280, 950)
         self.setMaximumSize(1920, 1080)
 
         # create widgets
@@ -84,6 +84,9 @@ class FollowManager(QtWidgets.QWidget):
         self.modify_pos_button = QtWidgets.QPushButton("手动修改仓位")
         self.modify_pos_button.clicked.connect(self.manual_modify_pos)
 
+        self.close_hedged_pos_button = QtWidgets.QPushButton("锁仓单平仓")
+        self.close_hedged_pos_button.clicked.connect(self.close_hedged_pos)
+
         for btn in [self.start_button,
                     self.stop_button,
                     self.sync_open_button,
@@ -92,7 +95,8 @@ class FollowManager(QtWidgets.QWidget):
                     self.sync_all_button,
                     self.sync_net_button,
                     self.sync_basic_button,
-                    self.modify_pos_button]:
+                    self.modify_pos_button,
+                    self.close_hedged_pos_button]:
             btn.setFixedHeight(btn.sizeHint().height() * 2)
 
         gateways = self.follow_engine.get_connected_gateway_names()
@@ -154,6 +158,7 @@ class FollowManager(QtWidgets.QWidget):
         form_sync.addRow(self.sync_net_button)
         form_sync.addRow(self.sync_basic_button)
         form_sync.addRow(self.modify_pos_button)
+        form_sync.addRow(self.close_hedged_pos_button)
 
         vbox = QtWidgets.QVBoxLayout()
         vbox.addLayout(form)
@@ -322,6 +327,10 @@ class FollowManager(QtWidgets.QWidget):
         dialog = PosEditor(self.follow_engine)
         dialog.exec_()
 
+    def close_hedged_pos(self):
+        dialog = CloseHedgedDialog(self.follow_engine)
+        dialog.exec_()
+
     def write_log(self, msg: str):
         """"""
         self.follow_engine.write_log(msg)
@@ -460,6 +469,72 @@ class PosEditor(QtWidgets.QDialog):
         self.follow_engine.set_pos(self.modify_symbol, 'target_short', int(new_short))
         self.follow_engine.save_follow_data()
         self.write_log(f"{self.modify_symbol}仓位修改成功")
+
+    def write_log(self, msg: str):
+        """"""
+        self.follow_engine.write_log(msg)
+
+
+
+class CloseHedgedDialog(QtWidgets.QDialog):
+    def __init__(self, follow_engine: FollowEngine):
+        super().__init__()
+
+        self.follow_engine = follow_engine
+        self.close_symbol = ""
+
+        self.init_ui()
+
+    def init_ui(self):
+        self.setWindowTitle("已对冲仓位平仓")
+
+        self.symbol_combo = ComboBox()
+        self.symbol_combo.pop_show.connect(self.refresh_symbol_list)
+        self.symbol_combo.activated[str].connect(self.set_close_symbol)
+
+        validator = QtGui.QIntValidator()
+        self.close_pos_line = QtWidgets.QLineEdit()
+        self.close_pos_line.setValidator(validator)
+
+        button_close = QtWidgets.QPushButton("平仓")
+        button_close.clicked.connect(self.close_hedged_pos)
+
+        form = QtWidgets.QFormLayout()
+        form.addRow("合约代码", self.symbol_combo)
+        form.addRow("平仓手数", self.close_pos_line)
+
+        hbox = QtWidgets.QHBoxLayout()
+        hbox.addWidget(button_close)
+
+        vbox = QtWidgets.QVBoxLayout()
+        vbox.addLayout(form)
+        vbox.addLayout(hbox)
+
+        self.setLayout(vbox)
+
+
+    def set_close_symbol(self, vt_symbol: str):
+        """
+        Set symbol to be clsoed
+        """
+        self.modify_symbol = vt_symbol
+        target_long = self.follow_engine.get_pos(vt_symbol, 'target_long')
+        target_short = self.follow_engine.get_pos(vt_symbol, 'target_short')
+        avaiable = min(target_long, target_short)
+
+        self.close_pos_line.setText(str(avaiable))
+        self.write_log(f"选中合约{self.modify_symbol}")
+
+    def refresh_symbol_list(self):
+        """"""
+        self.symbol_combo.clear()
+        symbol_list = list(self.follow_engine.get_positions().keys())
+        self.symbol_combo.addItems(symbol_list)
+
+    def close_hedged_pos(self):
+        """"""
+        pos = self.close_pos_line.text()
+        self.follow_engine.close_hedged_pos(self.modify_symbol, int(pos))
 
     def write_log(self, msg: str):
         """"""
