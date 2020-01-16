@@ -486,7 +486,7 @@ class CloseHedgedDialog(QtWidgets.QDialog):
         self.init_ui()
 
     def init_ui(self):
-        self.setWindowTitle("已对冲仓位平仓")
+        self.setWindowTitle("锁仓单平仓")
 
         self.symbol_combo = ComboBox()
         self.symbol_combo.pop_show.connect(self.refresh_symbol_list)
