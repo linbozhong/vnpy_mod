@@ -389,9 +389,9 @@ class FollowEngine(BaseEngine):
         self.cancel_all_order()
         self.write_log("跟随交易停止")
 
+        self.clear_empty_pos()
         self.save_follow_setting()
         self.save_follow_data()
-        self.clear_empty_pos()
 
         self.save_trade()
         self.save_contract()
