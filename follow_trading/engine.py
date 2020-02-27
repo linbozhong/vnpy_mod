@@ -179,7 +179,11 @@ class FollowEngine(BaseEngine):
             if self.tick_time is None:
                 now = datetime.now()
             else:
-                now = self.tick_time
+                if datetime.now() - self.tick_time > timedelta(seconds=self.filter_trade_timeout):
+                    self.write_log("系统时间超过行情时间1分钟，可能是收市或行情中断，开始使用系统时间")
+                    now = datetime.now()
+                else:
+                    now = self.tick_time
         else:
             now = datetime.now()
         return now
