@@ -1,4 +1,5 @@
 import pickle
+import traceback
 import pandas as pd
 
 from collections import defaultdict
@@ -498,79 +499,95 @@ class FollowEngine(BaseEngine):
         """
         process order from target gateway.
         """
-        order = event.data
-        vt_orderid = order.vt_orderid
-        if order.gateway_name == self.source_gateway_name:
-            return
+        try:
+            order = event.data
+            vt_orderid = order.vt_orderid
+            if order.gateway_name == self.source_gateway_name:
+                return
 
-        self.offset_converter.update_order(order)
+            self.offset_converter.update_order(order)
 
-        # Filter non-follow order
-        if not self.filter_target_not_follow(order.vt_orderid):
-            return
+            # Filter non-follow order
+            if not self.filter_target_not_follow(order.vt_orderid):
+                return
 
-        if order.is_active():
-            self.active_order_set.add(vt_orderid)
-            self.active_order_counter[vt_orderid] = 0
-        else:
-            if vt_orderid in self.active_order_set:
-                self.active_order_counter.pop(vt_orderid)
-                self.active_order_set.remove(vt_orderid)
+            if order.is_active():
+                self.active_order_set.add(vt_orderid)
+                self.active_order_counter[vt_orderid] = 0
+            else:
+                if vt_orderid in self.active_order_set:
+                    self.active_order_counter.pop(vt_orderid)
+                    self.active_order_set.remove(vt_orderid)
+        except:  # noqa
+            msg = f"处理委托事件，触发异常：\n{traceback.format_exc()}"
+            self.write_log(msg)
 
     def process_trade_event(self, event: Event):
         """"""
-        trade = event.data
+        try:
+            trade = event.data
 
-        # Filter duplicate trade push if reconnect gateway for disconnected reason.
-        if trade.vt_tradeid in self.vt_tradeids:
-            self.write_log(f"成交单{trade.vt_tradeid}是重复推送。")
-            return
-        else:
-            self.vt_tradeids.add(trade.vt_tradeid)
+            # Filter duplicate trade push if reconnect gateway for disconnected reason.
+            if trade.vt_tradeid in self.vt_tradeids:
+                self.write_log(f"成交单{trade.vt_tradeid}是重复推送。")
+                return
+            else:
+                self.vt_tradeids.add(trade.vt_tradeid)
 
-        if not self.is_active:
-            self.write_log(f"成交单{trade.vt_tradeid}不跟随，系统尚未启动。")
-            return
-
-        if trade.gateway_name == self.source_gateway_name:
-            # validate source trade
-            if not self.filter_source_trade(trade):
+            if not self.is_active:
+                self.write_log(f"成交单{trade.vt_tradeid}不跟随，系统尚未启动。")
                 return
 
-            # generate order request based on trade
-            req = self.convert_trade_to_order_req(trade)
-            if not req:
-                return
+            if trade.gateway_name == self.source_gateway_name:
+                # validate source trade
+                if not self.filter_source_trade(trade):
+                    return
 
-            # send orders or push to order cache
-            self.send_order(req, trade.vt_tradeid)
-        else:
-            self.offset_converter.update_trade(trade)
-            if not self.filter_target_not_follow(trade.vt_orderid):
-                self.write_log(f"成交单{trade.vt_tradeid} 不是跟随策略的成交单。")
-                return
-            self.update_target_pos(trade)
+                # generate order request based on trade
+                req = self.convert_trade_to_order_req(trade)
+                if not req:
+                    return
+
+                # send orders or push to order cache
+                self.send_order(req, trade.vt_tradeid)
+            else:
+                self.offset_converter.update_trade(trade)
+                if not self.filter_target_not_follow(trade.vt_orderid):
+                    self.write_log(f"成交单{trade.vt_tradeid} 不是跟随策略的成交单。")
+                    return
+                self.update_target_pos(trade)
+        except:  # noqa
+            msg = f"处理成交事件，触发异常：\n{traceback.format_exc()}"
+            self.write_log(msg)
 
     def process_timer_event(self, event: Event):
         """"""
-        self.send_queue_order()
-        self.cancel_timeout_order()
-        # self.view_test_variables()
-        self.refresh_pos()
-        self.auto_save_trade()
+        try:
+            self.send_queue_order()
+            self.cancel_timeout_order()
+            # self.view_test_variables()
+            self.refresh_pos()
+            self.auto_save_trade()
+        except:  # noqa
+            msg = f"处理定时事件，触发异常：\n{traceback.format_exc()}"
+            self.write_log(msg)
 
     def process_position_event(self, event: Event):
         """
         update source gateway position and target gateway offset converter position
         """
-        position = event.data
+        try:
+            position = event.data
 
-        if self.is_active:
-            self.pre_subscribe(position)
-        if position.gateway_name == self.source_gateway_name:
-            self.update_source_pos(position)
-        else:
-            self.offset_converter.update_position(position)
+            if self.is_active:
+                self.pre_subscribe(position)
+            if position.gateway_name == self.source_gateway_name:
+                self.update_source_pos(position)
+            else:
+                self.offset_converter.update_position(position)
+        except:  # noqa
+            msg = f"处理持仓事件，触发异常：\n{traceback.format_exc()}"
+            self.write_log(msg)
 
     def pre_subscribe(self, position: PositionData):
         """
