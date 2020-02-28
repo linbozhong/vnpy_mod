@@ -1,6 +1,7 @@
 from vnpy.event import EventEngine, Event
 from vnpy.trader.engine import MainEngine
 from vnpy.trader.ui import QtWidgets, QtCore, QtGui
+from vnpy.trader.utility import TRADER_DIR
 from vnpy.trader.ui.widget import (
     BaseCell,
     MsgCell,
@@ -51,7 +52,7 @@ class FollowManager(QtWidgets.QWidget):
 
     def init_ui(self):
         """"""
-        self.setWindowTitle("跟随交易")
+        self.setWindowTitle(f"跟随交易 [{TRADER_DIR}]")
         self.setMinimumSize(1280, 950)
         self.setMaximumSize(1920, 1080)
 
