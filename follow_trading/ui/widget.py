@@ -53,7 +53,7 @@ class FollowManager(QtWidgets.QWidget):
     def init_ui(self):
         """"""
         self.setWindowTitle(f"跟随交易 [{TRADER_DIR}]")
-        self.setMinimumSize(1280, 950)
+        self.setMinimumSize(1280, 768)
         self.setMaximumSize(1920, 1080)
 
         # create widgets
@@ -64,39 +64,23 @@ class FollowManager(QtWidgets.QWidget):
         self.stop_button.clicked.connect(self.stop_follow)
         self.stop_button.setEnabled(False)
 
-        self.sync_open_button = QtWidgets.QPushButton("单合约开仓同步")
-        self.sync_open_button.clicked.connect(self.sync_open)
+        self.sync_pos_button = QtWidgets.QPushButton("同步持仓")
+        self.sync_pos_button.clicked.connect(self.sync_pos)
 
-        self.sync_close_button = QtWidgets.QPushButton("单合约平仓同步")
-        self.sync_close_button.clicked.connect(self.sync_close)
-
-        self.sync_button = QtWidgets.QPushButton("单合约开平同步")
-        self.sync_button.clicked.connect(self.sync_open_and_close)
-
-        self.sync_all_button = QtWidgets.QPushButton("所有持仓同步")
-        self.sync_all_button.clicked.connect(self.sync_all)
-
-        self.sync_net_button = QtWidgets.QPushButton("日内交易同步")
-        self.sync_net_button.clicked.connect(lambda: self.sync_net_delta(is_sync_baisc=False))
-
-        self.sync_basic_button = QtWidgets.QPushButton("日内底仓同步")
-        self.sync_basic_button.clicked.connect(lambda: self.sync_net_delta(is_sync_baisc=True))
-
-        self.modify_pos_button = QtWidgets.QPushButton("手动修改仓位")
+        self.modify_pos_button = QtWidgets.QPushButton("修改仓位")
         self.modify_pos_button.clicked.connect(self.manual_modify_pos)
+
+        self.set_skip_button = QtWidgets.QPushButton("同步合约设置")
+        self.set_skip_button.clicked.connect(self.set_skip_contracts)
 
         self.close_hedged_pos_button = QtWidgets.QPushButton("锁仓单平仓")
         self.close_hedged_pos_button.clicked.connect(self.close_hedged_pos)
 
         for btn in [self.start_button,
                     self.stop_button,
-                    self.sync_open_button,
-                    self.sync_close_button,
-                    self.sync_button,
-                    self.sync_all_button,
-                    self.sync_net_button,
-                    self.sync_basic_button,
+                    self.sync_pos_button,
                     self.modify_pos_button,
+                    self.set_skip_button,
                     self.close_hedged_pos_button]:
             btn.setFixedHeight(btn.sizeHint().height() * 2)
 
@@ -115,10 +99,6 @@ class FollowManager(QtWidgets.QWidget):
 
         self.follow_direction_combo = QtWidgets.QComboBox()
         self.follow_direction_combo.addItems(['正向跟随', '反向跟随'])
-
-        self.sync_symbol_combo = ComboBox()
-        self.sync_symbol_combo.pop_show.connect(self.refresh_symbol_list)
-        self.sync_symbol_combo.activated[str].connect(self.set_sync_symbol)
 
         validator = QtGui.QIntValidator()
         self.timeout_line = QtWidgets.QLineEdit(str(self.follow_engine.cancel_order_timeout))
@@ -150,21 +130,16 @@ class FollowManager(QtWidgets.QWidget):
         form.addRow(self.start_button)
         form.addRow(self.stop_button)
 
-        form_sync = QtWidgets.QFormLayout()
-        form_sync.addRow("同步合约", self.sync_symbol_combo)
-        form_sync.addRow(self.sync_open_button)
-        form_sync.addRow(self.sync_close_button)
-        form_sync.addRow(self.sync_button)
-        form_sync.addRow(self.sync_all_button)
-        form_sync.addRow(self.sync_net_button)
-        form_sync.addRow(self.sync_basic_button)
-        form_sync.addRow(self.modify_pos_button)
-        form_sync.addRow(self.close_hedged_pos_button)
+        form_action = QtWidgets.QFormLayout()
+        form_action.addRow(self.sync_pos_button)
+        form_action.addRow(self.modify_pos_button)
+        form_action.addRow(self.set_skip_button)
+        form_action.addRow(self.close_hedged_pos_button)
 
         vbox = QtWidgets.QVBoxLayout()
         vbox.addLayout(form)
         vbox.addStretch()
-        vbox.addLayout(form_sync)
+        vbox.addLayout(form_action)
         vbox.addStretch()
 
         grid = QtWidgets.QGridLayout()
@@ -227,10 +202,13 @@ class FollowManager(QtWidgets.QWidget):
     def refresh_gateway_name(self):
         """"""
         gateways = self.follow_engine.get_connected_gateway_names()
-        for combo in [self.source_combo, self.target_combo]:
-            combo.clear()
-            combo.addItems(gateways)
-        self.write_log(f"接口名称获取成功")
+        if not gateways:
+            self.write_log(f"获取不到可用接口名称，请先连接接口")
+        else:
+            for combo in [self.source_combo, self.target_combo]:
+                combo.clear()
+                combo.addItems(gateways)
+            self.write_log(f"接口名称获取成功")
 
     def refresh_symbol_list(self):
         """"""
@@ -248,6 +226,8 @@ class FollowManager(QtWidgets.QWidget):
 
     def start_follow(self):
         """"""
+        self.pos_delta_monitor.resize_columns()
+
         source = self.source_combo.currentText()
         target = self.target_combo.currentText()
         if source == target:
@@ -288,48 +268,29 @@ class FollowManager(QtWidgets.QWidget):
     def validate_vt_symbol(self, vt_symbol: str):
         """"""
         if not vt_symbol:
-            self.write_log(f"未选择要同步的合约")
+            self.write_log(f"合约名称不能为空，请正确选择或输入")
             return
         vt_symbol = vt_symbol.strip()
         contract = self.main_engine.get_contract(vt_symbol)
         if not contract:
-            self.write_log(f"尚未连接交易接口或合约{vt_symbol}不是可交易的合约")
+            self.write_log(f"{vt_symbol}无法匹配接口的可交易的合约，请检查合约是否正确或接口是否连接")
         else:
             return vt_symbol
 
-    def sync_open(self):
-        """"""
-        vt_symbol = self.sync_symbol
-        if self.validate_vt_symbol(vt_symbol):
-            self.follow_engine.sync_open_pos(vt_symbol)
-
-    def sync_close(self):
-        """"""
-        vt_symbol = self.sync_symbol
-        if self.validate_vt_symbol(vt_symbol):
-            self.follow_engine.sync_close_pos(vt_symbol)
-
-    def sync_open_and_close(self):
-        """"""
-        vt_symbol = self.sync_symbol
-        if self.validate_vt_symbol(vt_symbol):
-            self.follow_engine.sync_pos(vt_symbol)
-
-    def sync_all(self):
-        """"""
-        self.follow_engine.sync_all_pos()
-
-    def sync_net_delta(self, is_sync_baisc: bool):
-        vt_symbol = self.sync_symbol
-        if self.validate_vt_symbol(vt_symbol):
-            self.follow_engine.sync_net_pos_delta(vt_symbol, is_sync_baisc)
+    def sync_pos(self):
+        dialog = SyncPosEditor(self, self.follow_engine)
+        dialog.exec_()
 
     def manual_modify_pos(self):
-        dialog = PosEditor(self.follow_engine)
+        dialog = PosEditor(self, self.follow_engine)
+        dialog.exec_()
+
+    def set_skip_contracts(self):
+        dialog = SkipContractEditor(self, self.follow_engine)
         dialog.exec_()
 
     def close_hedged_pos(self):
-        dialog = CloseHedgedDialog(self.follow_engine)
+        dialog = CloseHedgedDialog(self, self.follow_engine)
         dialog.exec_()
 
     def write_log(self, msg: str):
@@ -393,18 +354,129 @@ class LogMonitor(BaseMonitor):
         self.resizeRowToContents(0)
 
 
-class PosEditor(QtWidgets.QDialog):
-    def __init__(self, follow_engine: FollowEngine):
+class SyncPosEditor(QtWidgets.QDialog):
+    def __init__(self, parent: QtWidgets.QWidget, follow_engine: FollowEngine):
         super().__init__()
 
+        self.parent = parent
+        self.follow_engine = follow_engine
+
+        self.sync_symbol = ''
+
+        self.init_ui()
+
+    def init_ui(self):
+        self.setWindowTitle("同步仓位")
+        self.setMinimumWidth(300)
+
+        # select symbol widget
+        self.sync_symbol_combo = ComboBox()
+        self.sync_symbol_combo.pop_show.connect(self.refresh_symbol_list)
+        self.sync_symbol_combo.activated[str].connect(self.set_sync_symbol)
+
+        # sync action button
+        self.sync_open_button = QtWidgets.QPushButton("单合约开仓同步")
+        self.sync_open_button.clicked.connect(self.sync_open)
+
+        self.sync_close_button = QtWidgets.QPushButton("单合约平仓同步")
+        self.sync_close_button.clicked.connect(self.sync_close)
+
+        self.sync_button = QtWidgets.QPushButton("单合约开平同步")
+        self.sync_button.clicked.connect(self.sync_open_and_close)
+
+        self.sync_all_button = QtWidgets.QPushButton("所有持仓同步")
+        self.sync_all_button.clicked.connect(self.sync_all)
+
+        self.sync_net_button = QtWidgets.QPushButton("日内交易同步")
+        self.sync_net_button.clicked.connect(lambda: self.sync_net_delta(is_sync_baisc=False))
+
+        self.sync_basic_button = QtWidgets.QPushButton("日内底仓同步")
+        self.sync_basic_button.clicked.connect(lambda: self.sync_net_delta(is_sync_baisc=True))
+
+        for btn in [self.sync_open_button,
+                    self.sync_close_button,
+                    self.sync_button,
+                    self.sync_all_button,
+                    self.sync_net_button,
+                    self.sync_basic_button]:
+            btn.setFixedHeight(btn.sizeHint().height() * 1.5)
+
+        # set layout
+        form_sync = QtWidgets.QFormLayout()
+        form_sync.addRow("同步合约", self.sync_symbol_combo)
+        form_sync.addRow(self.sync_open_button)
+        form_sync.addRow(self.sync_close_button)
+        form_sync.addRow(self.sync_button)
+        form_sync.addRow(self.sync_all_button)
+        form_sync.addRow(self.sync_net_button)
+        form_sync.addRow(self.sync_basic_button)
+
+        vbox = QtWidgets.QVBoxLayout()
+        vbox.addLayout(form_sync)
+
+        self.setLayout(vbox)
+
+    def refresh_symbol_list(self):
+        """"""
+        self.sync_symbol_combo.clear()
+        symbol_list = list(self.follow_engine.get_positions().keys())
+        self.sync_symbol_combo.addItems(symbol_list)
+
+    def set_sync_symbol(self, vt_symbol: str):
+        """"""
+        self.sync_symbol = vt_symbol
+        self.write_log(f"选中合约{self.sync_symbol}")
+
+    def validate_vt_symbol(self, vt_symbol: str):
+        """"""
+        return self.parent.validate_vt_symbol(vt_symbol)
+
+    def sync_open(self):
+        """"""
+        vt_symbol = self.sync_symbol
+        if self.validate_vt_symbol(vt_symbol):
+            self.follow_engine.sync_open_pos(vt_symbol)
+
+    def sync_close(self):
+        """"""
+        vt_symbol = self.sync_symbol
+        if self.validate_vt_symbol(vt_symbol):
+            self.follow_engine.sync_close_pos(vt_symbol)
+
+    def sync_open_and_close(self):
+        """"""
+        vt_symbol = self.sync_symbol
+        if self.validate_vt_symbol(vt_symbol):
+            self.follow_engine.sync_pos(vt_symbol)
+
+    def sync_all(self):
+        """"""
+        self.follow_engine.sync_all_pos()
+
+    def sync_net_delta(self, is_sync_baisc: bool):
+        """"""
+        vt_symbol = self.sync_symbol
+        if self.validate_vt_symbol(vt_symbol):
+            self.follow_engine.sync_net_pos_delta(vt_symbol, is_sync_baisc)
+
+    def write_log(self, msg: str):
+        """"""
+        self.follow_engine.write_log(msg)
+
+
+class PosEditor(QtWidgets.QDialog):
+    def __init__(self, parent: QtWidgets.QWidget, follow_engine: FollowEngine):
+        super().__init__()
+
+        self.parent = parent
         self.follow_engine = follow_engine
         self.modify_symbol = ""
 
         self.init_ui()
 
-
     def init_ui(self):
-        self.setWindowTitle("手动修改仓位")
+        self.setWindowTitle("修改仓位")
+        self.setMinimumWidth(300)
 
         self.symbol_combo = ComboBox()
         self.symbol_combo.pop_show.connect(self.refresh_symbol_list)
@@ -424,6 +496,9 @@ class PosEditor(QtWidgets.QDialog):
         button_modify = QtWidgets.QPushButton("修改")
         button_modify.clicked.connect(self.modify)
 
+        for btn in [button_modify]:
+            btn.setFixedHeight(btn.sizeHint().height() * 1.5)
+
         form = QtWidgets.QFormLayout()
         form.addRow("合约代码", self.symbol_combo)
         form.addRow("目标户多仓", self.long_pos_line)
@@ -438,7 +513,6 @@ class PosEditor(QtWidgets.QDialog):
         vbox.addLayout(hbox)
 
         self.setLayout(vbox)
-
 
     def set_modify_symbol(self, vt_symbol: str):
         """
@@ -476,11 +550,91 @@ class PosEditor(QtWidgets.QDialog):
         self.follow_engine.write_log(msg)
 
 
-
-class CloseHedgedDialog(QtWidgets.QDialog):
-    def __init__(self, follow_engine: FollowEngine):
+class SkipContractEditor(QtWidgets.QDialog):
+    def __init__(self, parent: QtWidgets.QWidget, follow_engine: FollowEngine):
         super().__init__()
 
+        self.parent = parent
+        self.follow_engine = follow_engine
+        self.removed_symbol = ''
+
+        self.init_ui()
+
+    def init_ui(self):
+        self.setWindowTitle("设置禁止同步")
+        self.setMinimumWidth(300)
+
+        self.symbol_combo = ComboBox()
+        self.symbol_combo.pop_show.connect(self.refresh_symbol_list)
+        self.symbol_combo.activated[str].connect(self.set_removed_symbol)
+
+        self.new_remove_line = QtWidgets.QLineEdit()
+
+        button_add = QtWidgets.QPushButton("添加")
+        button_add.clicked.connect(self.add)
+
+        button_remove = QtWidgets.QPushButton("移除")
+        button_remove.clicked.connect(self.remove)
+
+        for btn in [button_add, button_remove]:
+            btn.setFixedHeight(btn.sizeHint().height() * 1.5)
+
+        form = QtWidgets.QFormLayout()
+        form.addRow("已禁止合约", self.symbol_combo)
+        form.addRow("添加新合约", self.new_remove_line)
+
+        hbox = QtWidgets.QHBoxLayout()
+        hbox.addWidget(button_add)
+        hbox.addWidget(button_remove)
+
+        vbox = QtWidgets.QVBoxLayout()
+        vbox.addLayout(form)
+        vbox.addLayout(hbox)
+
+        self.setLayout(vbox)
+
+    def set_removed_symbol(self, vt_symbol: str):
+        """
+        Set symbol to be modified
+        """
+        self.new_remove_line.setText(vt_symbol)
+        self.removed_symbol = vt_symbol
+        self.write_log(f"选中合约名{self.removed_symbol}")
+
+    def refresh_symbol_list(self):
+        """"""
+        self.symbol_combo.clear()
+        symbol_list = self.follow_engine.get_skip_contracts()
+        self.symbol_combo.addItems(symbol_list)
+
+    def add(self):
+        """"""
+        vt_symbol = self.new_remove_line.text()
+        if self.parent.validate_vt_symbol(vt_symbol):
+            if vt_symbol not in self.follow_engine.get_skip_contracts():
+                self.follow_engine.get_skip_contracts().append(vt_symbol)
+                self.write_log(f"{vt_symbol}添加到禁止同步合约成功")
+            else:
+                self.write_log(f"{vt_symbol}已禁止同步，无需添加")
+
+    def remove(self):
+        """"""
+        vt_symbol = self.removed_symbol
+        if vt_symbol:
+            self.follow_engine.get_skip_contracts().remove(vt_symbol)
+            self.write_log(f"{vt_symbol}从禁止同步合约移除成功")
+        else:
+            self.write_log(f"合约尚未选择")
+
+    def write_log(self, msg: str):
+        """"""
+        self.follow_engine.write_log(msg)
+
+class CloseHedgedDialog(QtWidgets.QDialog):
+    def __init__(self, parent: QtWidgets.QWidget, follow_engine: FollowEngine):
+        super().__init__()
+
+        self.parent = parent
         self.follow_engine = follow_engine
         self.close_symbol = ""
 
@@ -488,6 +642,7 @@ class CloseHedgedDialog(QtWidgets.QDialog):
 
     def init_ui(self):
         self.setWindowTitle("锁仓单平仓")
+        self.setMinimumWidth(300)
 
         self.symbol_combo = ComboBox()
         self.symbol_combo.pop_show.connect(self.refresh_symbol_list)
@@ -499,6 +654,9 @@ class CloseHedgedDialog(QtWidgets.QDialog):
 
         button_close = QtWidgets.QPushButton("平仓")
         button_close.clicked.connect(self.close_hedged_pos)
+
+        for btn in [button_close]:
+            btn.setFixedHeight(btn.sizeHint().height() * 1.5)
 
         form = QtWidgets.QFormLayout()
         form.addRow("合约代码", self.symbol_combo)
@@ -512,7 +670,6 @@ class CloseHedgedDialog(QtWidgets.QDialog):
         vbox.addLayout(hbox)
 
         self.setLayout(vbox)
-
 
     def set_close_symbol(self, vt_symbol: str):
         """

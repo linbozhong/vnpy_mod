@@ -146,6 +146,8 @@ class FollowEngine(BaseEngine):
         self.pos_key = ['source_long', 'source_short', 'source_net',
                         'target_long', 'target_short', 'target_net', 'net_delta', 'basic_delta']
 
+        self.skip_contracts = []
+
         self.load_data()
 
     def init_engine(self):
@@ -226,6 +228,9 @@ class FollowEngine(BaseEngine):
         """"""
         return self.positions
 
+    def get_skip_contracts(self):
+        return self.skip_contracts
+
     def load_follow_setting(self):
         """
         Load setting from setting file.
@@ -280,12 +285,8 @@ class FollowEngine(BaseEngine):
         """
         if self.follow_data:
             # save to history data file
-            folder_name = 'follow_history'
-            get_folder_path(folder_name)
-            today = self.get_current_time().strftime('%Y%m%d')
-            hist_filename = f"{today}_{self.data_filename}"
-            hist_path = f"{folder_name}/{hist_filename}"
-            save_json(hist_path, self.follow_data)
+            today = datetime.now().strftime('%Y%m%d')
+            save_json(f"follow_history/{today}_{self.data_filename}", self.follow_data)
             self.write_log("清除临时数据并保存至历史成功")
 
             # clear the template variables
@@ -297,10 +298,9 @@ class FollowEngine(BaseEngine):
         """
         Save trade record to file.
         """
-        today = self.get_current_time().strftime('%Y%m%d')
+        today = datetime.now().strftime('%Y%m%d')
         trade_folder = get_folder_path('trade')
-        trade_file_name = f"trade_{today}.csv"
-        trade_file_path = trade_folder.joinpath(trade_file_name)
+        trade_file_path = trade_folder.joinpath(f"trade_{today}.csv")
 
         account_id = 'null'
         accounts = self.main_engine.get_all_accounts()
@@ -330,7 +330,7 @@ class FollowEngine(BaseEngine):
         """
         Save account info to file every day
         """
-        today = self.get_current_time().strftime('%Y%m%d')
+        today = datetime.now().strftime('%Y%m%d')
         account_file = get_file_path("account_info.csv")
 
         account_text = ""
@@ -767,10 +767,21 @@ class FollowEngine(BaseEngine):
         else:
             return False
 
+    def is_skip_contract_trade(self, trade: TradeData):
+        if trade.vt_symbol in self.skip_contracts:
+            self.write_log(f"成交单{trade.vt_tradeid} 合约{trade.vt_symbol}是禁止同步合约。")
+            return True
+        else:
+            return False
+
     def filter_source_trade(self, trade: TradeData):
         """
         Filter trade from source gateway.
         """
+        # filter skip contract
+        if self.is_skip_contract_trade(trade):
+            return
+
         # filter timeout trade
         if self.is_timeout_trade(trade):
             return
@@ -1152,7 +1163,8 @@ class FollowEngine(BaseEngine):
         sync_flag = "BASIC" if is_basic else "SYNC"
 
         # trade_id is required or it will be filtered, then pos can't be calculated correctly.
-        time_id = f"{self.get_current_time().strftime('%H%M%S')}{str(self.get_current_time().microsecond // 1000)}"
+        now_time = self.get_current_time()
+        time_id = f"{now_time.strftime('%H%M%S')}{str(now_time.microsecond // 1000)}"
         self.sync_order_ref += 1
         vt_tradeid = f"{sync_flag}_{time_id}_{self.sync_order_ref}"
         self.send_order(req, vt_tradeid)
