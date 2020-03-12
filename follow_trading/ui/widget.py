@@ -53,7 +53,7 @@ class FollowManager(QtWidgets.QWidget):
     def init_ui(self):
         """"""
         self.setWindowTitle(f"跟随交易 [{TRADER_DIR}]")
-        self.setMinimumSize(1280, 768)
+        self.setMinimumSize(1060, 768)
         self.setMaximumSize(1920, 1080)
 
         # create widgets
@@ -70,7 +70,7 @@ class FollowManager(QtWidgets.QWidget):
         self.modify_pos_button = QtWidgets.QPushButton("修改仓位")
         self.modify_pos_button.clicked.connect(self.manual_modify_pos)
 
-        self.set_skip_button = QtWidgets.QPushButton("同步合约设置")
+        self.set_skip_button = QtWidgets.QPushButton("同步设置")
         self.set_skip_button.clicked.connect(self.set_skip_contracts)
 
         self.close_hedged_pos_button = QtWidgets.QPushButton("锁仓单平仓")
@@ -96,6 +96,14 @@ class FollowManager(QtWidgets.QWidget):
         self.order_type_combo = QtWidgets.QComboBox()
         self.order_type_combo.addItems(['限价', '市价'])
         self.order_type_combo.activated[str].connect(self.set_order_type)
+
+        self.skip_contracts_combo = ComboBox()
+        self.skip_contracts_combo.pop_show.connect(self.refresh_skip_contracts)
+        self.refresh_skip_contracts()
+
+        self.intraday_combo = ComboBox()
+        self.intraday_combo.pop_show.connect(self.refresh_intraday)
+        self.refresh_intraday()
 
         self.follow_direction_combo = QtWidgets.QComboBox()
         self.follow_direction_combo.addItems(['正向跟随', '反向跟随'])
@@ -131,6 +139,8 @@ class FollowManager(QtWidgets.QWidget):
         form.addRow(self.stop_button)
 
         form_action = QtWidgets.QFormLayout()
+        form_action.addRow("日内模式品种", self.intraday_combo)
+        form_action.addRow("禁止同步合约", self.skip_contracts_combo)
         form_action.addRow(self.sync_pos_button)
         form_action.addRow(self.modify_pos_button)
         form_action.addRow(self.set_skip_button)
@@ -210,11 +220,17 @@ class FollowManager(QtWidgets.QWidget):
                 combo.addItems(gateways)
             self.write_log(f"接口名称获取成功")
 
-    def refresh_symbol_list(self):
+    def refresh_skip_contracts(self):
         """"""
-        self.sync_symbol_combo.clear()
-        symbol_list = list(self.follow_engine.get_positions().keys())
-        self.sync_symbol_combo.addItems(symbol_list)
+        self.skip_contracts_combo.clear()
+        symbol_list = self.follow_engine.get_skip_contracts()
+        self.skip_contracts_combo.addItems(symbol_list)
+
+    def refresh_intraday(self):
+        """"""
+        self.intraday_combo.clear()
+        symbol_list = self.follow_engine.get_intraday_symbols()
+        self.intraday_combo.addItems(symbol_list)
 
     def test_timer(self):
         """"""
@@ -316,14 +332,14 @@ class PosDeltaMonitor(BaseMonitor):
 
     headers = {
         "vt_symbol": {"display": "合约代码", "cell": BaseCell, "update": False},
-        "source_long": {"display": "源账户多仓", "cell": BidCell, "update": True},
-        "source_short": {"display": "源账户空仓", "cell": AskCell, "update": True},
-        "source_net": {"display": "源账户净仓", "cell": PnlCell, "update": True},
-        "target_long": {"display": "目标户多仓", "cell": BidCell, "update": True},
-        "target_short": {"display": "目标户空仓", "cell": AskCell, "update": True},
-        "target_net": {"display": "目标户净仓", "cell": PnlCell, "update": True},
-        "long_delta": {"display": "多头仓差", "cell": BaseCell, "update": True},
-        "short_delta": {"display": "空头仓差", "cell": BaseCell, "update": True},
+        "source_long": {"display": "源户多仓", "cell": BidCell, "update": True},
+        "source_short": {"display": "源户空仓", "cell": AskCell, "update": True},
+        "source_net": {"display": "源户净仓", "cell": PnlCell, "update": True},
+        "target_long": {"display": "目标多仓", "cell": BidCell, "update": True},
+        "target_short": {"display": "目标空仓", "cell": AskCell, "update": True},
+        "target_net": {"display": "目标净仓", "cell": PnlCell, "update": True},
+        "long_delta": {"display": "多仓差", "cell": BaseCell, "update": True},
+        "short_delta": {"display": "空仓差", "cell": BaseCell, "update": True},
         "net_delta": {"display": "净仓差", "cell": PnlCell, "update": True},
         "basic_delta": {"display": "底仓差", "cell": PnlCell, "update": True}
     }
@@ -557,41 +573,68 @@ class SkipContractEditor(QtWidgets.QDialog):
         self.parent = parent
         self.follow_engine = follow_engine
         self.removed_symbol = ''
+        self.removed_com = ''
 
         self.init_ui()
 
     def init_ui(self):
-        self.setWindowTitle("设置禁止同步")
+        self.setWindowTitle("同步合约设置")
         self.setMinimumWidth(300)
 
         self.symbol_combo = ComboBox()
         self.symbol_combo.pop_show.connect(self.refresh_symbol_list)
         self.symbol_combo.activated[str].connect(self.set_removed_symbol)
+        self.refresh_symbol_list()
+
+        self.intra_combo = ComboBox()
+        self.intra_combo.pop_show.connect(self.refresh_intra_list)
+        self.intra_combo.activated[str].connect(self.set_removed_com)
+        self.refresh_intra_list()
 
         self.new_remove_line = QtWidgets.QLineEdit()
+        self.new_intra_line = QtWidgets.QLineEdit()
 
-        button_add = QtWidgets.QPushButton("添加")
+        button_add = QtWidgets.QPushButton("添加禁止同步")
         button_add.clicked.connect(self.add)
 
-        button_remove = QtWidgets.QPushButton("移除")
+        button_remove = QtWidgets.QPushButton("移除禁止同步")
         button_remove.clicked.connect(self.remove)
 
-        for btn in [button_add, button_remove]:
+        button_add_com = QtWidgets.QPushButton("添加日内品种")
+        button_add_com.clicked.connect(self.add_com)
+
+        button_remove_com = QtWidgets.QPushButton("移除日内品种")
+        button_remove_com.clicked.connect(self.remove_com)
+
+        for btn in [button_add, button_remove, button_add_com, button_remove_com]:
             btn.setFixedHeight(btn.sizeHint().height() * 1.5)
 
         form = QtWidgets.QFormLayout()
-        form.addRow("已禁止合约", self.symbol_combo)
+        form.addRow("禁止同步合约", self.symbol_combo)
         form.addRow("添加新合约", self.new_remove_line)
 
         hbox = QtWidgets.QHBoxLayout()
         hbox.addWidget(button_add)
         hbox.addWidget(button_remove)
 
+        form_com = QtWidgets.QFormLayout()
+        form_com.addRow("日内模式品种", self.intra_combo)
+        form_com.addRow("添加新品种", self.new_intra_line)
+
+        hbox_com = QtWidgets.QHBoxLayout()
+        hbox_com.addWidget(button_add_com)
+        hbox_com.addWidget(button_remove_com)
+
         vbox = QtWidgets.QVBoxLayout()
         vbox.addLayout(form)
+        vbox.addLayout(form_com)
         vbox.addLayout(hbox)
+        vbox.addLayout(hbox_com)
 
         self.setLayout(vbox)
+
+        # self.symbol_combo.currentTextChanged[str].connect(self.set_removed_symbol)
+        # self.intra_combo.currentTextChanged[str].connect(self.set_removed_com)
 
     def set_removed_symbol(self, vt_symbol: str):
         """
@@ -601,11 +644,24 @@ class SkipContractEditor(QtWidgets.QDialog):
         self.removed_symbol = vt_symbol
         self.write_log(f"选中合约名{self.removed_symbol}")
 
+    def set_removed_com(self, commodity: str):
+        """
+        Set commodity to intraday mode
+        """
+        self.new_intra_line.setText(commodity)
+        self.removed_com = commodity
+        self.write_log(f"选中品种名{self.removed_com}")
+
     def refresh_symbol_list(self):
         """"""
         self.symbol_combo.clear()
         symbol_list = self.follow_engine.get_skip_contracts()
         self.symbol_combo.addItems(symbol_list)
+
+    def refresh_intra_list(self):
+        self.intra_combo.clear()
+        symbol_list = self.follow_engine.get_intraday_symbols()
+        self.intra_combo.addItems(symbol_list)
 
     def add(self):
         """"""
@@ -613,18 +669,48 @@ class SkipContractEditor(QtWidgets.QDialog):
         if self.parent.validate_vt_symbol(vt_symbol):
             if vt_symbol not in self.follow_engine.get_skip_contracts():
                 self.follow_engine.get_skip_contracts().append(vt_symbol)
+                self.refresh_symbol_list()
+                self.parent.refresh_skip_contracts()
                 self.write_log(f"{vt_symbol}添加到禁止同步合约成功")
             else:
-                self.write_log(f"{vt_symbol}已禁止同步，无需添加")
+                self.write_log(f"{vt_symbol}已禁止同步，无需重复添加")
 
     def remove(self):
         """"""
         vt_symbol = self.removed_symbol
         if vt_symbol:
-            self.follow_engine.get_skip_contracts().remove(vt_symbol)
-            self.write_log(f"{vt_symbol}从禁止同步合约移除成功")
+            skip_contracts = self.follow_engine.get_skip_contracts()
+            if vt_symbol in skip_contracts:
+                skip_contracts.remove(vt_symbol)
+                self.refresh_symbol_list()
+                self.parent.refresh_skip_contracts()
+                self.write_log(f"{vt_symbol}从禁止同步合约移除成功")
         else:
             self.write_log(f"合约尚未选择")
+
+    def add_com(self):
+        """"""
+        commodity = self.new_intra_line.text()
+        if commodity not in self.follow_engine.get_intraday_symbols():
+            self.follow_engine.get_intraday_symbols().append(commodity)
+            self.refresh_intra_list()
+            self.parent.refresh_intraday()
+            self.write_log(f"{commodity}添加到日内模式成功")
+        else:
+            self.write_log(f"{commodity}已成为日内模式，无需重复添加")
+
+    def remove_com(self):
+        """"""
+        commodity = self.removed_com
+        if commodity:
+            intra_symbols = self.follow_engine.get_intraday_symbols()
+            if commodity in intra_symbols:
+                intra_symbols.remove(commodity)
+                self.refresh_intra_list()
+                self.parent.refresh_intraday()
+                self.write_log(f"{commodity}从日内模式移除成功")
+        else:
+            self.write_log(f"品种尚未选择")
 
     def write_log(self, msg: str):
         """"""

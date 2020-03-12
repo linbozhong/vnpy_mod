@@ -154,18 +154,18 @@ class FollowEngine(BaseEngine):
         """
         Init engine.
         """
-        self.write_log("参数和数据读取成功")
+        self.write_log("参数和数据读取成功。")
         # update vt_tradeid firstly
         self.update_tradeids()
         print('vt_tradeids', self.vt_tradeids)
 
         self.register_event()
         if self.run_type == FollowRunType.TEST:
-            self.write_log("测试模式：订阅行情以获取最新时间")
+            self.write_log("测试模式：订阅行情以获取最新时间。")
             self.subscribe(self.test_symbol)
         else:
-            self.write_log("实盘模式：定期校时以确保时间准确")
-        self.write_log("跟随交易初始化完成")
+            self.write_log("实盘模式：定期校时以确保时间准确。")
+        self.write_log("跟随交易初始化完成。")
 
     def load_data(self):
         """
@@ -229,7 +229,12 @@ class FollowEngine(BaseEngine):
         return self.positions
 
     def get_skip_contracts(self):
+        """"""
         return self.skip_contracts
+
+    def get_intraday_symbols(self):
+        """"""
+        return self.intraday_symbols
 
     def load_follow_setting(self):
         """
@@ -380,6 +385,7 @@ class FollowEngine(BaseEngine):
 
         self.is_active = True
         self.write_log("跟随交易启动")
+
         return True
 
     def stop(self):
@@ -395,6 +401,8 @@ class FollowEngine(BaseEngine):
         self.write_log("跟随交易停止")
 
         self.clear_empty_pos()
+        self.clear_expired_pos()
+
         self.save_follow_setting()
         self.save_follow_data()
 
@@ -596,9 +604,7 @@ class FollowEngine(BaseEngine):
         vt_symbol = position.vt_symbol
         if not self.is_price_inited(vt_symbol):
             if self.subscribe(vt_symbol):
-                self.write_log(f"仓位合约{vt_symbol}预订阅成功")
-            else:
-                self.write_log(f"仓位合约{vt_symbol}预订阅失败")
+                self.write_log(f"{vt_symbol}行情订阅请求已发送")
 
     def cancel_timeout_order(self):
         """
@@ -660,6 +666,17 @@ class FollowEngine(BaseEngine):
             if (pos['source_long'] + pos['source_short'] + pos['target_long'] + pos['target_short'] == 0):
                 self.positions.pop(symbol)
 
+    def clear_expired_pos(self):
+        """
+        clear expired contract data
+        """
+        for symbol in list(self.positions.keys()):
+            contract = self.main_engine.get_contract(symbol)
+            if not contract:
+                self.positions.pop(symbol)
+                self.write_log(f"{symbol}已过期，清除成功。")
+
+
     def init_symbol_pos(self, vt_symbol: str):
         """
         Create symbol pos dict.
@@ -711,7 +728,7 @@ class FollowEngine(BaseEngine):
 
         self.save_follow_data()
         self.put_pos_delta_event(vt_symbol)
-        self.write_log(f"合约{vt_symbol}仓位更新成功")
+        self.write_log(f"{vt_symbol}仓位更新成功")
 
     def subscribe(self, vt_symbol: str):
         """
@@ -769,7 +786,7 @@ class FollowEngine(BaseEngine):
 
     def is_skip_contract_trade(self, trade: TradeData):
         if trade.vt_symbol in self.skip_contracts:
-            self.write_log(f"成交单{trade.vt_tradeid} 合约{trade.vt_symbol}是禁止同步合约。")
+            self.write_log(f"成交单{trade.vt_tradeid} 合约{trade.vt_symbol}禁止同步。")
             return True
         else:
             return False
@@ -868,10 +885,10 @@ class FollowEngine(BaseEngine):
         Trade convert to order request
         """
         if trade.offset == Offset.NONE:
-            self.write_log(f"成交单{trade.vt_tradeid} offset为None，非CTP正常成交单")
+            self.write_log(f"成交单{trade.vt_tradeid} offset为None，非CTP正常成交单。")
             return
         if trade.direction == Direction.NET:
-            self.write_log(f"成交单{trade.vt_tradeid} direction为Net， 非CTP正常成交单")
+            self.write_log(f"成交单{trade.vt_tradeid} direction为Net， 非CTP正常成交单。")
             return
 
         req = OrderRequest(
@@ -918,7 +935,7 @@ class FollowEngine(BaseEngine):
         """
         if not self.is_price_inited(req.vt_symbol):
             self.subscribe(req.vt_symbol)
-            self.write_log(f"订阅合约{req.vt_symbol}")
+            self.write_log(f"{req.vt_symbol}订阅请求已发送。")
         self.due_out_req_list.append((vt_tradeid, req))
 
     def send_queue_order(self):
@@ -956,11 +973,11 @@ class FollowEngine(BaseEngine):
             else:
                 order_prefix = "跟随单"
 
-            self.write_log(f"{order_prefix} 单号：{vt_tradeid}发单成功，委托单号系列：{'  '.join(vt_orderids)}")
+            self.write_log(f"{order_prefix} 单号：{vt_tradeid}发单成功，委托单号系列：{'  '.join(vt_orderids)}。")
 
             # Save data to file
             self.save_follow_data()
-            self.write_log(f"{order_prefix} 单号{vt_tradeid}记录保存成功")
+            self.write_log(f"{order_prefix} 单号{vt_tradeid}记录保存成功。")
         return vt_orderids
 
     def convert_and_send_orders(self, req: OrderRequest):
@@ -993,12 +1010,12 @@ class FollowEngine(BaseEngine):
         """
         order = self.main_engine.get_order(vt_orderid)
         if not order:
-            self.write_log(f"撤单失败，找不到委托号 {vt_orderid}")
+            self.write_log(f"撤单失败，找不到委托号 {vt_orderid}。")
             return
 
         req = order.create_cancel_request()
         self.main_engine.cancel_order(req, order.gateway_name)
-        self.write_log(f"委托号{vt_orderid}撤单请求已报")
+        self.write_log(f"委托号{vt_orderid}撤单请求已报。")
 
     def cancel_all_order(self, vt_symbol: str = ""):
         """
@@ -1016,7 +1033,7 @@ class FollowEngine(BaseEngine):
         """
         symbol_pos = self.positions.get(vt_symbol, None)
         if symbol_pos is None:
-            self.write_log(f"{vt_symbol} 合约仓位不存在。")
+            self.write_log(f"{vt_symbol}仓位不存在。")
             return False
         else:
             return True
@@ -1062,18 +1079,20 @@ class FollowEngine(BaseEngine):
             elif net_pos_delta < 0:
                 self.short(vt_symbol, abs(net_pos_delta), market_price=market_price, is_basic=is_sync_basic)
             else:
-                self.write_log(f"{vt_symbol}无净仓差，无需同步")
+                self.write_log(f"{vt_symbol}净仓差与底仓差一致，仓差不是跟随交易引起的，无需同步。")
                 return
             
             if is_sync_basic:
                 symbol_pos = self.positions.get(vt_symbol, None)
                 symbol_pos['basic_delta'] = 0
+        else:
+            self.write_log(f"{vt_symbol}不是日内模式。")
 
 
     def sync_open_pos(self, vt_symbol: str):
         """"""
         if self.strip_digit(vt_symbol) in self.intraday_symbols:
-            self.write_log(f"{vt_symbol}是日内模式，只支持同步净仓")
+            self.write_log(f"{vt_symbol}是日内模式，只支持同步净仓。")
             return
 
         if self.is_pos_exists(vt_symbol):
@@ -1084,17 +1103,17 @@ class FollowEngine(BaseEngine):
             if long_pos_delta > 0:
                 self.buy(vt_symbol, long_pos_delta)
             else:
-                self.write_log(f"多开仓同步：{vt_symbol}目标户无仓差或多仓更多，无需同步")
+                self.write_log(f"多开仓同步：{vt_symbol}目标户无仓差或多仓更多，无需同步。")
 
             if short_pos_delta > 0:
                 self.short(vt_symbol, short_pos_delta)
             else:
-                self.write_log(f"空开仓同步：{vt_symbol}目标户无仓差或空仓更多，无需同步")
+                self.write_log(f"空开仓同步：{vt_symbol}目标户无仓差或空仓更多，无需同步。")
 
     def sync_close_pos(self, vt_symbol: str):
         """"""
         if self.strip_digit(vt_symbol) in self.intraday_symbols:
-            self.write_log(f"{vt_symbol}是日内模式，只支持同步净仓")
+            self.write_log(f"{vt_symbol}是日内模式，只支持同步净仓。")
             return
 
         if self.is_pos_exists(vt_symbol):
@@ -1105,19 +1124,19 @@ class FollowEngine(BaseEngine):
             if long_pos_delta < 0:
                 self.sell(vt_symbol, abs(long_pos_delta))
             else:
-                self.write_log(f"多平仓同步：{vt_symbol}目标户无仓差或多仓更少，无需同步")
+                self.write_log(f"多平仓同步：{vt_symbol}目标户无仓差或多仓更少，无需同步。")
 
             if short_pos_delta < 0:
                 self.cover(vt_symbol, abs(short_pos_delta))
             else:
-                self.write_log(f"空平仓同步：{vt_symbol}目标户无仓差或空仓更少，无需同步")
+                self.write_log(f"空平仓同步：{vt_symbol}目标户无仓差或空仓更少，无需同步。")
 
     def sync_pos(self, vt_symbol: str):
         """Sync position between source and target by vt_symbol"""
         if self.is_pos_exists(vt_symbol):
             long_pos_delta, short_pos_delta = self.get_pos_delta(vt_symbol)
             if long_pos_delta == short_pos_delta == 0:
-                self.write_log(f"{vt_symbol}源账户与目标户仓位一致，无需同步")
+                self.write_log(f"{vt_symbol}源账户与目标户仓位一致，无需同步。")
                 return
 
             self.sync_open_pos(vt_symbol)
@@ -1224,9 +1243,9 @@ class FollowEngine(BaseEngine):
             if pos <= avaiable:
                 self.sell(vt_symbol, pos, market_price=True)
                 self.cover(vt_symbol, pos, market_price=True)
-                self.write_log(f"已对冲仓位平仓委托单已报，合约：{vt_symbol}，手数：{pos} ")
+                self.write_log(f"已对冲仓位平仓委托单已报，{vt_symbol}，手数：{pos}。")
             else:
-                self.write_log(f"平仓手数超出最大已对冲仓位")
+                self.write_log(f"平仓手数超出最大已对冲仓位。")
 
 
     def put_pos_delta_event(self, vt_symbol: str):
