@@ -220,6 +220,7 @@ class FollowEngine(BaseEngine):
         """
         # if not self.gateway_names:
         accounts = self.main_engine.get_all_accounts()
+        print(accounts)
         self.gateway_names = [account.gateway_name for account in accounts]
         print(self.gateway_names)
         return self.gateway_names

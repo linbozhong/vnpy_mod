@@ -46,6 +46,8 @@ class FollowManager(QtWidgets.QWidget):
 
         self.sync_symbol = ''
 
+        self.is_gateway_inited = False
+
         self.init_ui()
         self.follow_engine.init_engine()
         self.register_event()
@@ -66,15 +68,19 @@ class FollowManager(QtWidgets.QWidget):
 
         self.sync_pos_button = QtWidgets.QPushButton("同步持仓")
         self.sync_pos_button.clicked.connect(self.sync_pos)
+        self.sync_pos_button.setEnabled(False)
 
         self.modify_pos_button = QtWidgets.QPushButton("修改仓位")
         self.modify_pos_button.clicked.connect(self.manual_modify_pos)
+        self.modify_pos_button.setEnabled(False)
 
         self.set_skip_button = QtWidgets.QPushButton("同步设置")
         self.set_skip_button.clicked.connect(self.set_skip_contracts)
+        self.set_skip_button.setEnabled(False)
 
         self.close_hedged_pos_button = QtWidgets.QPushButton("锁仓单平仓")
         self.close_hedged_pos_button.clicked.connect(self.close_hedged_pos)
+        self.close_hedged_pos_button.setEnabled(False)
 
         for btn in [self.start_button,
                     self.stop_button,
@@ -85,6 +91,8 @@ class FollowManager(QtWidgets.QWidget):
             btn.setFixedHeight(btn.sizeHint().height() * 2)
 
         gateways = self.follow_engine.get_connected_gateway_names()
+        if len(gateways) == 2:
+            self.is_gateway_inited = True
 
         self.source_combo = ComboBox()
         self.source_combo.addItems(gateways)
@@ -141,9 +149,9 @@ class FollowManager(QtWidgets.QWidget):
         form_action = QtWidgets.QFormLayout()
         form_action.addRow("日内模式品种", self.intraday_combo)
         form_action.addRow("禁止同步合约", self.skip_contracts_combo)
-        form_action.addRow(self.sync_pos_button)
         form_action.addRow(self.modify_pos_button)
         form_action.addRow(self.set_skip_button)
+        form_action.addRow(self.sync_pos_button)
         form_action.addRow(self.close_hedged_pos_button)
 
         vbox = QtWidgets.QVBoxLayout()
@@ -242,6 +250,11 @@ class FollowManager(QtWidgets.QWidget):
 
     def start_follow(self):
         """"""
+        if not self.is_gateway_inited:
+            self.write_log("跟单接口和下单接口未全部初始化，可能是RPC尚未连接账户，必须重启程序正确连接后再启动！")
+            self.start_button.setEnabled(False)
+            return
+
         self.pos_delta_monitor.resize_columns()
 
         source = self.source_combo.currentText()
@@ -269,6 +282,11 @@ class FollowManager(QtWidgets.QWidget):
         if result:
             self.start_button.setEnabled(False)
             self.stop_button.setEnabled(True)
+
+            self.sync_pos_button.setEnabled(True)
+            self.close_hedged_pos_button.setEnabled(True)
+            self.modify_pos_button.setEnabled(True)
+            self.set_skip_button.setEnabled(True)
 
             self.source_combo.setEnabled(False)
             self.target_combo.setEnabled(False)
