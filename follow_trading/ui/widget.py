@@ -120,12 +120,19 @@ class FollowManager(QtWidgets.QWidget):
         self.timeout_line = QtWidgets.QLineEdit(str(self.follow_engine.cancel_order_timeout))
         self.timeout_line.setValidator(validator)
         self.timeout_line.editingFinished.connect(self.set_cancel_order_timeout)
+
+        self.follow_timeout_line = QtWidgets.QLineEdit(str(self.follow_engine.filter_trade_timeout))
+        self.follow_timeout_line.setValidator(validator)
+        self.follow_timeout_line.editingFinished.connect(self.set_follow_timeout)
+
         self.tickout_line = QtWidgets.QLineEdit(str(self.follow_engine.tick_add))
         self.tickout_line.setValidator(validator)
         self.tickout_line.editingFinished.connect(self.set_tick_add)
+
         self.multiples_line = QtWidgets.QLineEdit(str(self.follow_engine.multiples))
         self.multiples_line.setValidator(validator)
         self.multiples_line.editingFinished.connect(self.set_multiples)
+
         self.single_max_line = QtWidgets.QLineEdit(str(self.follow_engine.single_max))
         self.single_max_line.setValidator(validator)
         self.single_max_line.editingFinished.connect(self.set_single_max)
@@ -140,6 +147,7 @@ class FollowManager(QtWidgets.QWidget):
         form.addRow("发单类型", self.order_type_combo)
         form.addRow("跟单方向", self.follow_direction_combo)
         form.addRow("超时自动撤单（秒）", self.timeout_line)
+        form.addRow("超时禁止跟单（秒）", self.follow_timeout_line)
         form.addRow("超价下单档位", self.tickout_line)
         form.addRow("跟随倍数", self.multiples_line)
         form.addRow("单笔最大手数", self.single_max_line)
@@ -198,6 +206,11 @@ class FollowManager(QtWidgets.QWidget):
         text = self.timeout_line.text()
         self.follow_engine.set_parameters('cancel_order_timeout', int(text))
         self.write_log(f"未成交自动撤单超时：{self.follow_engine.cancel_order_timeout} 秒设置成功")
+
+    def set_follow_timeout(self):
+        text = self.follow_timeout_line.text()
+        self.follow_engine.set_parameters('filter_trade_timeout', int(text))
+        self.write_log(f"成交单超时：{self.follow_engine.filter_trade_timeout} 秒设置成功")
 
     def set_tick_add(self):
         """"""
