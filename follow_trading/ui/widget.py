@@ -72,7 +72,7 @@ class FollowManager(QtWidgets.QWidget):
 
         self.modify_pos_button = QtWidgets.QPushButton("修改仓位")
         self.modify_pos_button.clicked.connect(self.manual_modify_pos)
-        self.modify_pos_button.setEnabled(False)
+        # self.modify_pos_button.setEnabled(False)
 
         self.set_skip_button = QtWidgets.QPushButton("同步设置")
         self.set_skip_button.clicked.connect(self.set_skip_contracts)
@@ -298,7 +298,7 @@ class FollowManager(QtWidgets.QWidget):
 
             self.sync_pos_button.setEnabled(True)
             self.close_hedged_pos_button.setEnabled(True)
-            self.modify_pos_button.setEnabled(True)
+            self.modify_pos_button.setEnabled(False)
             self.set_skip_button.setEnabled(True)
 
             self.source_combo.setEnabled(False)
@@ -311,6 +311,7 @@ class FollowManager(QtWidgets.QWidget):
         if result:
             self.start_button.setEnabled(True)
             self.stop_button.setEnabled(False)
+            self.modify_pos_button.setEnabled(True)
 
     def validate_vt_symbol(self, vt_symbol: str):
         """"""

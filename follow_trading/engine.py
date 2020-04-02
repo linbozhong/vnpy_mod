@@ -405,7 +405,7 @@ class FollowEngine(BaseEngine):
         self.clear_expired_pos()
 
         self.save_follow_setting()
-        self.save_follow_data()
+        # self.save_follow_data()
 
         self.save_trade()
         self.save_contract()
@@ -538,13 +538,13 @@ class FollowEngine(BaseEngine):
 
             # Filter duplicate trade push if reconnect gateway for disconnected reason.
             if trade.vt_tradeid in self.vt_tradeids:
-                self.write_log(f"成交单{trade.vt_tradeid}是重复推送。")
+                self.write_log(f"{trade.vt_tradeid}是重复推送。")
                 return
             else:
                 self.vt_tradeids.add(trade.vt_tradeid)
 
             if not self.is_active:
-                self.write_log(f"成交单{trade.vt_tradeid}不跟随，系统尚未启动。")
+                self.write_log(f"{trade.vt_tradeid}不跟随，系统尚未启动。")
                 return
 
             if trade.gateway_name == self.source_gateway_name:
@@ -562,7 +562,7 @@ class FollowEngine(BaseEngine):
             else:
                 self.offset_converter.update_trade(trade)
                 if not self.filter_target_not_follow(trade.vt_orderid):
-                    self.write_log(f"成交单{trade.vt_tradeid} 不是跟随策略的成交单。")
+                    self.write_log(f"{trade.vt_tradeid} 不是跟随策略的成交单。")
                     return
                 self.update_target_pos(trade)
         except:  # noqa
@@ -627,7 +627,7 @@ class FollowEngine(BaseEngine):
         """
         Put pos delta event regularly.
         """
-        if self.refresh_pos_interval > 4:
+        if self.refresh_pos_interval > 3:
             for vt_symbol in self.positions:
                 # print('refresh', vt_symbol)
                 self.put_pos_delta_event(vt_symbol)
@@ -772,7 +772,7 @@ class FollowEngine(BaseEngine):
         trade_time = datetime.strptime(trade.time, '%H:%M:%S')
         trade_time = trade_time.replace(year=now.year, month=now.month, day=now.day)
         if now - trade_time > timedelta(seconds=self.filter_trade_timeout):
-            self.write_log(f"成交单：{trade.vt_tradeid} 成交时间：{trade.time} 超过跟单有效期。")
+            self.write_log(f"{trade.vt_tradeid} 成交时间：{trade.time} 超过跟单有效期。")
             return True
         else:
             return False
@@ -780,14 +780,14 @@ class FollowEngine(BaseEngine):
     def is_followed_trade(self, trade: TradeData):
         """"""
         if trade.vt_tradeid in self.tradeid_orderids_dict:
-            self.write_log(f"成交单{trade.vt_tradeid} 已跟随，无需重复跟随。")
+            self.write_log(f"{trade.vt_tradeid} 已跟随，无需重复跟随。")
             return True
         else:
             return False
 
     def is_skip_contract_trade(self, trade: TradeData):
         if trade.vt_symbol in self.skip_contracts:
-            self.write_log(f"成交单{trade.vt_tradeid} 合约{trade.vt_symbol}禁止同步。")
+            self.write_log(f"{trade.vt_tradeid} 合约{trade.vt_symbol}禁止同步。")
             return True
         else:
             return False
@@ -886,10 +886,10 @@ class FollowEngine(BaseEngine):
         Trade convert to order request
         """
         if trade.offset == Offset.NONE:
-            self.write_log(f"成交单{trade.vt_tradeid} offset为None，非CTP正常成交单。")
+            self.write_log(f"{trade.vt_tradeid} offset为None，非CTP正常成交单。")
             return
         if trade.direction == Direction.NET:
-            self.write_log(f"成交单{trade.vt_tradeid} direction为Net， 非CTP正常成交单。")
+            self.write_log(f"{trade.vt_tradeid} direction为Net， 非CTP正常成交单。")
             return
 
         req = OrderRequest(
@@ -938,6 +938,7 @@ class FollowEngine(BaseEngine):
             self.subscribe(req.vt_symbol)
             self.write_log(f"{req.vt_symbol}订阅请求已发送。")
         self.due_out_req_list.append((vt_tradeid, req))
+        self.write_log(f"{vt_tradeid}核验通过，已进入发单队列")
 
     def send_queue_order(self):
         """
@@ -974,11 +975,11 @@ class FollowEngine(BaseEngine):
             else:
                 order_prefix = "跟随单"
 
-            self.write_log(f"{order_prefix} 单号：{vt_tradeid}发单成功，委托单号系列：{'  '.join(vt_orderids)}。")
+            self.write_log(f"{order_prefix} {vt_tradeid}发单成功，委托号：{'  '.join(vt_orderids)}。")
 
             # Save data to file
             self.save_follow_data()
-            self.write_log(f"{order_prefix} 单号{vt_tradeid}记录保存成功。")
+            # self.write_log(f"{order_prefix} {vt_tradeid}记录保存成功。")
         return vt_orderids
 
     def convert_and_send_orders(self, req: OrderRequest):
@@ -1060,8 +1061,8 @@ class FollowEngine(BaseEngine):
         Calculate net pos. If not sync basic position, it need adjust by basic pos.
         """
         symbol_pos = self.positions.get(vt_symbol, None)
-        symbol_pos['net_delta'] = symbol_pos['source_net'] * self.multiples - symbol_pos['target_net']
-        net_pos_delta = symbol_pos['net_delta'] if not self.inverse_follow else (- symbol_pos['net_delta'])
+        delta = symbol_pos['source_net'] * self.multiples - symbol_pos['target_net']
+        net_pos_delta = delta if not self.inverse_follow else (- delta)
         return net_pos_delta
 
     def sync_net_pos_delta(self, vt_symbol: str, is_sync_basic: bool = False):
