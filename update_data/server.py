@@ -121,7 +121,7 @@ class DataRpcServer(RpcServer):
     def get_update_symbol() -> List:
         data = load_json(CTA_SETTING_FILENAME)
         symbols = set()
-        for name, setting in data.items():
+        for _name, setting in data.items():
             symbols.add(setting['vt_symbol'])
         return list(symbols)
 
