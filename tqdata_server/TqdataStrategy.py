@@ -28,6 +28,8 @@ class TqdataStrategy(CtaTemplate):
         self.bar_type = 'index'
         self.vt_tq_symbol = f"{self.vt_symbol}.{self.bar_type}"
 
+        self.gateway = self.cta_engine.main_engine.get_gateway('Tqdata')
+
         self.register_event()
 
     def register_event(self):
@@ -77,11 +79,15 @@ class TqdataStrategy(CtaTemplate):
         """
         Query history bar from tqdata gateway.
         """
-        gateway = self.cta_engine.main_engine.get_gateway('Tqdata')
-        if gateway:
-            gateway.get_bar(self.vt_symbol, self.bar_type, interval, size)
-        else:
-            return ""
+        self.gateway.get_bar(self.vt_symbol, self.bar_type, interval, size)
+
+
+    def start_tq_pub(self):
+        """
+        Start tqdata publish.
+        """
+        self.gateway.start_tq_pub()
+
 
     def on_tq_bar(self, bar: BarData):
         """

@@ -1,10 +1,12 @@
 import tqsdk
+import threading
 import pandas as pd
 
 from time import sleep
-from tqsdk import TqApi
-from datetime import datetime
+from tqsdk import TqApi, TqReplay
+from datetime import datetime, date
 from typing import Any, Union, Optional
+from pathlib import Path
 
 from vnpy.event import Event, EventEngine, EVENT_TIMER
 from vnpy.trader.object import BarData
@@ -55,7 +57,11 @@ class TqdataServer():
 
         self.rpc_server = RpcServer()
         self.rpc_server.register(self.get_bar)
+        self.rpc_server.register(self.start_tq_pub)
         self.rpc_server.start(self.rep_address, self.pub_address)
+
+        self.is_active = False
+        self.thread = None
 
         self.tqapi = TqApi()
         self.data_dict = {}
@@ -86,9 +92,9 @@ class TqdataServer():
                 )
         return bar
 
-    def init_all_commodity():
-        pass
-
+    def init_all_commodity(self):
+        df = pd.read_csv(Path.cwd().joinpath('future_basic_data.csv'))
+        idx_symbols = [f"KQ.i@{row.exchange}.{row.commodity}" for _idx, row in df.iterrows()]
 
     def get_bar(self, vt_symbol: str, bar_type: str, interval: Interval, size: int = 200):
         print(vt_symbol, bar_type, interval, size)
@@ -127,22 +133,38 @@ class TqdataServer():
         self.on_event(EVENT_TQDATA_BAR, bar)
         self.on_event(EVENT_TQDATA_BAR + bar.symbol, bar)
 
-    def start(self):
+    def start_tq_pub(self):
+        if self.is_active:
+            print('tqdata推送已启动')
+            return
+        self.is_active = True
+        self.thread = threading.Thread(target=self.run_tq_pub)
+        self.thread.start()
+        print("tqdata开始数据推送")
+        
+    def run_tq_pub(self):
         while True:
             self.tqapi.wait_update()
             for bar_name, bar in self.data_dict.items():
                 if self.tqapi.is_changing(bar.iloc[-1], "datetime"):
+                    print(bar.iloc[-1])
                     vt_tq_symbol, exchange, interval = self.parse_bar_name(bar_name)
                     self.on_tqdata_bar(self.to_vt_bar(bar.iloc[-1], vt_tq_symbol, exchange, interval))
 
 
 if __name__ == "__main__":
-    event_engine = EventEngine()
-    publisher = TqdataServer(event_engine)
+    # event_engine = EventEngine()
+    # publisher = TqdataServer(event_engine)
+    # publisher.init_all_commodity()
     # publisher.get_bar('IF2005.CFFEX', 'index', Interval.MINUTE, 300)
     # publisher.start()
     # print(vt_symbol_to_tq_symbol('rb2010.SHFE', 'index'))
 
-    # tqapi = TqApi()
-    # df = tqapi.get_kline_serial('KQ.i@CFFEX.IF', 60, 200)
-    # print(df)
+    tqapi = TqApi(backtest=TqReplay(date(2020, 4, 15)))
+    df = tqapi.get_kline_serial('KQ.i@CFFEX.IF', 5, 200)
+    while True:
+        tqapi.wait_update()
+        if tqapi.is_changing(df.iloc[-1], "datetime"):
+            print(df.iloc[-1])
+
+    print(df)

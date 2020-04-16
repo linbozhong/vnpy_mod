@@ -52,6 +52,10 @@ class TqdataGateway(BaseGateway):
         print(vt_symbol, bar_type, interval, size)
         print('histroy request sended.')
 
+    def start_tq_pub(self):
+        """"""
+        self.client.start_tq_pub()
+
     def send_order(self, req: OrderRequest):
         """"""
         pass
