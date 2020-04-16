@@ -63,9 +63,17 @@ class TqdataServer():
         self.register_event()
 
     @staticmethod
-    def to_vt_bar(data: Union[dict, pd.Series], exchange: Exchange, interval: Interval) -> BarData:
+    def parse_bar_name(bar_name: str):
+        vt_symbol, bar_type, interval = bar_name.split('_')
+        interval = Interval(interval)
+        _symbol, exchange = extract_vt_symbol(vt_symbol)
+        vt_tq_symbol = f"{vt_symbol}.{bar_type}"
+        return vt_tq_symbol, exchange, interval
+
+    @staticmethod
+    def to_vt_bar(data: Union[dict, pd.Series], symbol: str, exchange: Exchange, interval: Interval) -> BarData:
         bar = BarData(
-                    symbol=data['symbol'],
+                    symbol=symbol,
                     exchange=exchange,
                     interval=interval,
                     datetime=datetime.fromtimestamp(data["datetime"] / 1e9),
@@ -78,7 +86,13 @@ class TqdataServer():
                 )
         return bar
 
+    def init_all_commodity():
+        pass
+
+
     def get_bar(self, vt_symbol: str, bar_type: str, interval: Interval, size: int = 200):
+        print(vt_symbol, bar_type, interval, size)
+        vt_tq_symbol = f"{vt_symbol}.{bar_type}"
         _, exchange = extract_vt_symbol(vt_symbol)
         tq_interval = INTERVAL_MAP_VT2TQ.get(interval, None)
         if tq_interval is None:
@@ -87,16 +101,14 @@ class TqdataServer():
         bars_df = self.data_dict.get(bar_name, None)
         if bars_df is None:
             tq_symbol = vt_symbol_to_tq_symbol(vt_symbol, bar_type)
+            print('get_bar_arguments', tq_symbol, tq_interval, size)
             bars_df = self.tqapi.get_kline_serial(tq_symbol, tq_interval, size)
             self.data_dict[bar_name] = bars_df
-            # print(bars_df)
+            print(bars_df)
 
-        data = []
         for _ix, row in bars_df.iterrows():
-            vt_bar = self.to_vt_bar(row, exchange, interval)
-            data.append(vt_bar)
-        print(data)
-        return data
+            vt_bar = self.to_vt_bar(row, vt_tq_symbol, exchange, interval)
+            self.on_tqdata_bar(vt_bar)
 
     def register_event(self):
         self.event_engine.register_general(self.process_event)
@@ -118,18 +130,19 @@ class TqdataServer():
     def start(self):
         while True:
             self.tqapi.wait_update()
-
             for bar_name, bar in self.data_dict.items():
                 if self.tqapi.is_changing(bar.iloc[-1], "datetime"):
-                    vt_symbol = bar_name.split('_')[0]
-                    interval = Interval(bar_name.split('_')[2])
-                    _symbol, exchange = extract_vt_symbol(vt_symbol)
-                    self.on_tqdata_bar(self.to_vt_bar(bar.iloc[-1], exchange, interval))
+                    vt_tq_symbol, exchange, interval = self.parse_bar_name(bar_name)
+                    self.on_tqdata_bar(self.to_vt_bar(bar.iloc[-1], vt_tq_symbol, exchange, interval))
 
 
 if __name__ == "__main__":
     event_engine = EventEngine()
     publisher = TqdataServer(event_engine)
-    publisher.get_bar('rb2010.SHFE', 'index', Interval.HOUR)
+    # publisher.get_bar('IF2005.CFFEX', 'index', Interval.MINUTE, 300)
     # publisher.start()
     # print(vt_symbol_to_tq_symbol('rb2010.SHFE', 'index'))
+
+    # tqapi = TqApi()
+    # df = tqapi.get_kline_serial('KQ.i@CFFEX.IF', 60, 200)
+    # print(df)
