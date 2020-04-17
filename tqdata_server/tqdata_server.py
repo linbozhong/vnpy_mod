@@ -72,8 +72,8 @@ class TqdataServer():
     def parse_bar_name(bar_name: str):
         vt_symbol, bar_type, interval = bar_name.split('_')
         interval = Interval(interval)
-        _symbol, exchange = extract_vt_symbol(vt_symbol)
-        vt_tq_symbol = f"{vt_symbol}.{bar_type}"
+        symbol, exchange = extract_vt_symbol(vt_symbol)
+        vt_tq_symbol = f"{symbol}.{bar_type}"
         return vt_tq_symbol, exchange, interval
 
     @staticmethod
@@ -92,14 +92,10 @@ class TqdataServer():
                 )
         return bar
 
-    def init_all_commodity(self):
-        df = pd.read_csv(Path.cwd().joinpath('future_basic_data.csv'))
-        idx_symbols = [f"KQ.i@{row.exchange}.{row.commodity}" for _idx, row in df.iterrows()]
-
     def get_bar(self, vt_symbol: str, bar_type: str, interval: Interval, size: int = 200):
         print(vt_symbol, bar_type, interval, size)
-        vt_tq_symbol = f"{vt_symbol}.{bar_type}"
-        _, exchange = extract_vt_symbol(vt_symbol)
+        symbol, exchange = extract_vt_symbol(vt_symbol)
+        vt_tq_symbol = f"{symbol}.{bar_type}"
         tq_interval = INTERVAL_MAP_VT2TQ.get(interval, None)
         if tq_interval is None:
             raise KeyError("The interval can only be daily, hour or minute")
@@ -147,24 +143,23 @@ class TqdataServer():
             self.tqapi.wait_update()
             for bar_name, bar in self.data_dict.items():
                 if self.tqapi.is_changing(bar.iloc[-1], "datetime"):
-                    print(bar.iloc[-1])
+                    # print(bar.iloc[-1])
                     vt_tq_symbol, exchange, interval = self.parse_bar_name(bar_name)
                     self.on_tqdata_bar(self.to_vt_bar(bar.iloc[-1], vt_tq_symbol, exchange, interval))
 
 
 if __name__ == "__main__":
-    # event_engine = EventEngine()
-    # publisher = TqdataServer(event_engine)
-    # publisher.init_all_commodity()
+    event_engine = EventEngine()
+    publisher = TqdataServer(event_engine)
     # publisher.get_bar('IF2005.CFFEX', 'index', Interval.MINUTE, 300)
     # publisher.start()
     # print(vt_symbol_to_tq_symbol('rb2010.SHFE', 'index'))
 
-    tqapi = TqApi(backtest=TqReplay(date(2020, 4, 15)))
-    df = tqapi.get_kline_serial('KQ.i@CFFEX.IF', 5, 200)
-    while True:
-        tqapi.wait_update()
-        if tqapi.is_changing(df.iloc[-1], "datetime"):
-            print(df.iloc[-1])
+    # tqapi = TqApi(backtest=TqReplay(date(2020, 4, 15)))
+    # df = tqapi.get_kline_serial('KQ.i@CFFEX.IF', 5, 200)
+    # while True:
+    #     tqapi.wait_update()
+    #     if tqapi.is_changing(df.iloc[-1], "datetime"):
+    #         print(df.iloc[-1])
 
-    print(df)
+    # print(df)

@@ -26,10 +26,11 @@ class TqdataStrategy(CtaTemplate):
         # self.am = ArrayManager()
 
         self.bar_type = 'index'
-        self.vt_tq_symbol = f"{self.vt_symbol}.{self.bar_type}"
+        self.vt_tq_symbol = ''
 
         self.gateway = self.cta_engine.main_engine.get_gateway('Tqdata')
 
+        self.set_vt_tq_symbol(self.vt_symbol)
         self.register_event()
 
     def register_event(self):
@@ -40,6 +41,11 @@ class TqdataStrategy(CtaTemplate):
         """"""
         bar = event.data
         self.on_tq_bar(bar)
+
+    def set_vt_tq_symbol(self, vt_symbol):
+        """"""
+        symbol, _exchange = extract_vt_symbol(vt_symbol)
+        self.vt_tq_symbol = f"{symbol}.{self.bar_type}"
 
     def on_init(self):
         """
@@ -53,6 +59,8 @@ class TqdataStrategy(CtaTemplate):
         Callback when strategy is started.
         """
         self.write_log("策略启动")
+        self.start_tq_pub()
+        self.write_log("开始从tqdata接收数据推送")
         self.put_event()
 
     def on_stop(self):
