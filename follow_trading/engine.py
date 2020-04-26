@@ -858,11 +858,19 @@ class FollowEngine(BaseEngine):
 
         # if limit up or limt down happend, save ask or bid price to variable.
         # do not directly use self.latest_prices, because it restore to the big number when tick updated.
-        ask_price = min(latest_prices['ask_price'], limit_price['limit_up'])
-        if latest_prices['bid_price'] > limit_price['limit_up']:
+        if ask_price == 0:
+            ask_price = limit_price['limit_up']
+        else:
+            # old version limit up
+            ask_price = min(latest_prices['ask_price'], limit_price['limit_up'])
+
+        if bid_price == 0:
             bid_price = limit_price['limit_down']
         else:
-            bid_price = latest_prices['bid_price']
+            if latest_prices['bid_price'] > limit_price['limit_up']:
+                bid_price = limit_price['limit_down']
+            else:
+                bid_price = latest_prices['bid_price']
 
         contract = self.main_engine.get_contract(vt_symbol)
         if direction == Direction.LONG:
