@@ -856,6 +856,8 @@ class FollowEngine(BaseEngine):
         limit_price = self.limited_prices.get(vt_symbol)
         latest_prices = self.latest_prices.get(vt_symbol)
 
+        ask_price, bid_price = latest_prices['ask_price'], latest_prices['bid_price']
+
         # if limit up or limt down happend, save ask or bid price to variable.
         # do not directly use self.latest_prices, because it restore to the big number when tick updated.
         if ask_price == 0:
