@@ -130,6 +130,8 @@ class FollowEngine(BaseEngine):
         # Timeout auto cancel
         self.active_order_set = set()
         self.active_order_counter = {}
+        self.max_cancel = 3
+        self.cancel_counter = {}
 
         self.offset_converter = OffsetConverter(main_engine)
 
@@ -523,6 +525,7 @@ class FollowEngine(BaseEngine):
             if order.is_active():
                 self.active_order_set.add(vt_orderid)
                 self.active_order_counter[vt_orderid] = 0
+                self.cancel_counter[vt_orderid] = 0
             else:
                 if vt_orderid in self.active_order_set:
                     self.active_order_counter.pop(vt_orderid)
@@ -616,9 +619,15 @@ class FollowEngine(BaseEngine):
             if counter is None:
                 continue
 
+            cancel_counter = self.cancel_counter.get(vt_orderid, None)
+            if cancel_counter and cancel_counter > self.max_cancel:
+                self.write_log(f"委托单{vt_orderid} 撤单超过{self.max_cancel}次，停止撤单。")
+                continue
+
             if counter > self.cancel_order_timeout:
                 self.cancel_order(vt_orderid)
                 self.active_order_counter[vt_orderid] = 0
+                self.cancel_counter[vt_orderid] += 1
                 self.write_log(f"委托单{vt_orderid} 超过最大等待时间，已执行撤单。")
 
             self.active_order_counter[vt_orderid] += 1
