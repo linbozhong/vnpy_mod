@@ -1,6 +1,6 @@
 import typing
-from typing import Optional, Dict, List, Set
-
+from typing import Optional, Dict, List, Set, Callable, Tuple
+from copy import copy
 
 from vnpy.event import Event, EventEngine
 from vnpy.trader.event import (
@@ -15,9 +15,11 @@ from vnpy.trader.object import (
 from vnpy.trader.engine import BaseEngine, MainEngine
 from vnpy.app.option_master.engine import OptionEngine
 from vnpy.app.option_master.base import (
-    APP_NAME, CHAIN_UNDERLYING_MAP,
-    PortfolioData, UnderlyingData, ChainData
+    CHAIN_UNDERLYING_MAP,
+    OptionData, PortfolioData, UnderlyingData, ChainData
 )
+
+APP_NAME = "OptionMasterExt"
 
 # if typing.TYPE_CHECKING:
 #     from .engine import OptionEngine
@@ -25,6 +27,7 @@ from vnpy.app.option_master.base import (
 class OptionEngineExt(OptionEngine):
     def __init__(self, main_engine: MainEngine, event_engine: EventEngine):
         super().__init__(main_engine, event_engine)
+        self.engine_name = APP_NAME
 
         self.channel_hedge_engine: ChannelHedgeEngine = ChannelHedgeEngine(self)
 
@@ -34,25 +37,39 @@ class ChannelHedgeEngine:
         self.option_engine: OptionEngineExt = option_engine
         self.main_engine: MainEngine = option_engine.main_engine
         self.event_engine: EventEngine = option_engine.event_engine
+        self.chase_order_engine: ChaseOrderEngine = ChaseOrderEngine(self.option_engine)
 
+        # parameters
+        self.check_delta_trigger: int = 5
+        self.calc_balance_trigger: int = 300
+        self.chanel_width: float = 0.0
+        self.hedge_percent: float = 0.0
+
+        # variables
         self.balance_prices: Dict[str, float] = {}
         self.underlyings: Dict[str, UnderlyingData] = {}
         self.underlying_symbols: Dict[str, str] = {}
         self.synthesis_chain_symbols: Dict[str, str] = {}
-
         self.auto_portfolio_names: List[str] = []
-        
         self.counters: Dict[str, float] = {}
-
-        self.check_delta_trigger: int = 5
-        self.calc_balance_trigger: int = 300
-
-        self.chanel_width: float = 0.0
-        self.hedge_percent: float = 0.0
 
         self.balance_price: float = 0.0
 
+        # order funcitons
+        self.buy: Optional[Callable] = None
+        self.sell: Optional[Callable] = None
+        self.short: Optional[Callable] = None
+        self.cover: Optional[Callable] = None
+
+        # init
         self.init_counter()
+        self.add_order_function()
+
+    def add_order_function(self) -> None:
+        self.buy = self.chase_order_engine.buy
+        self.sell = self.chase_order_engine.sell
+        self.short = self.chase_order_engine.short
+        self.cover = self.chase_order_engine.cover
 
     def init_counter(self) -> None:
         self.counters['check_delta'] = 0
@@ -181,34 +198,41 @@ class ChannelHedgeEngine:
 
             underlying = self.get_underlying(portfolio_name)
             if underlying.tick > up:
-                self.long_hedge(portfolio_name)
+                self.action_hedge(portfolio_name, Direction.LONG)
             elif underlying.tick < down:
-                self.short_hedge(portfolio_name)
+                self.action_hedge(portfolio_name, Direction.SHORT)
             else:
                 continue
 
-    def long_hedge(self, portfolio_name: str):
+    def get_synthesis_atm(self, portfolio_name: str) -> Tuple[OptionData, OptionData]:
         chain = self.get_synthesis_chain(portfolio_name)
         atm_call = chain.calls[chain.atm_index]
         atm_put = chain.puts[chain.atm_index]
-        unit_hedge_delta = atm_call.cash_delta - atm_put.cash_delta
+        return atm_call, atm_put
+
+    def calc_hedge_volume(self, portfolio_name: str) -> int:
+        atm_call, atm_put = self.get_synthesis_atm(portfolio_name)
+        unit_hedge_delta = abs(atm_call.cash_delta) + abs(atm_put.cash_delta)
 
         portfolio = self.get_portfolio(portfolio_name)
-        to_hedge_delta = abs(portfolio.pos_delta) * self.hedge_percent
-        to_hedge_volume = round(to_hedge_delta / unit_hedge_delta)
+        to_hedge_volume = abs(portfolio.pos_delta) * self.hedge_percent / unit_hedge_delta
+        return round(to_hedge_volume)
 
+    def action_hedge(self, portfolio_name: str, direction: Direction):
+        atm_call, atm_put = self.get_synthesis_atm(portfolio_name)
+        to_hedge_volume = self.calc_hedge_volume(portfolio_name)
         if not to_hedge_volume:
             self.write_log(f"{portfolio_name} Delta偏移量少于最小对冲单元值")
             return
 
-    def buy(self, volume: int):
-        pass
-
-    def short(self, volume: int):
-        pass
-
-    def short_hedge(self, portfolio_name: str):
-        pass
+        if direction == Direction.LONG:
+            self.buy(atm_call.vt_symbol, to_hedge_volume)
+            self.sell(atm_put.vt_symbol, to_hedge_volume)
+        elif direction == Direction.SHORT:
+            self.buy(atm_put.vt_symbol, to_hedge_volume)
+            self.sell(atm_call.vt_symbol, to_hedge_volume)
+        else:
+            self.write_log(f"对冲只支持多或者空")
 
     def write_log(self, msg: str):
         self.main_engine.write_log(msg, source=APP_NAME)
@@ -224,6 +248,7 @@ class ChaseOrderEngine:
         
         self.pay_up: int = 0
         self.cancel_interval: int = 3
+        self.max_volume: int = 30
         
         self.cancel_counts: Dict[str, int] = {}
 
@@ -254,7 +279,6 @@ class ChaseOrderEngine:
         self.send_order(order.vt_symbol, order.direction, order.offset, new_volume)
 
     def cancel_order(self, vt_orderid: str) -> None:
-        """"""
         order = self.main_engine.get_order(vt_orderid)
         req = order.create_cancel_request()
         self.main_engine.cancel_order(req, order.gateway_name)
@@ -262,8 +286,25 @@ class ChaseOrderEngine:
     def check_cancel(self) -> None:
         for vt_orderid in self.active_orderids:
             if self.cancel_counts[vt_orderid] > self.cancel_interval:
+                self.cancel_counts[vt_orderid] = 0
                 self.cancel_order(vt_orderid)
             self.cancel_counts[vt_orderid] += 1
+
+    def split_req(self, req: OrderRequest):
+        if req.volume <= self.max_volume:
+            return [req]
+
+        max_count, remainder = divmod(req.volume, self.max_volume)
+
+        req_max = copy(req)
+        req_max.volume = self.max_volume
+        req_list = [req_max for i in range(int(max_count))]
+
+        if remainder:
+            req_r = copy(req)
+            req_r.volume = remainder
+            req_list.append(req_r)
+        return req_list
 
     def send_order(self, vt_symbol: str, direction: Direction, offset: Offset, volume: float, price: Optional[float] = None) -> str:
         contract = self.main_engine.get_contract(vt_symbol)
@@ -275,7 +316,7 @@ class ChaseOrderEngine:
             else:
                 price = tick.bid_price_1 - contract.pricetick * self.pay_up
 
-        req = OrderRequest(
+        original_req = OrderRequest(
             symbol=contract.symbol,
             exchange=contract.exchange,
             direction=direction,
@@ -284,10 +325,16 @@ class ChaseOrderEngine:
             price=price
         )
 
-        vt_orderid = self.main_engine.send_order(req, contract.gateway_name)
-        self.active_orderids.add(vt_orderid)
-        self.cancel_counts[vt_orderid] = 0
-        return vt_orderid
+        splited_req_list = self.split_req(original_req)
+
+        vt_orderids = []
+        for req in splited_req_list:
+            vt_orderid = self.main_engine.send_order(req, contract.gateway_name)
+            vt_orderids.append(vt_orderid)
+            self.active_orderids.add(vt_orderid)
+            self.cancel_counts[vt_orderid] = 0
+
+        return vt_orderids
 
     def buy(self, vt_symbol: str, volume: float, price: Optional[float] = None):
         return self.send_order(vt_symbol, Direction.LONG, Offset.OPEN, volume, price)
