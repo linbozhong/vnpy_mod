@@ -21,18 +21,18 @@ from vnpy.app.option_master.base import (
 
 APP_NAME = "OptionMasterExt"
 
-# if typing.TYPE_CHECKING:
-#     from .engine import OptionEngine
+EVENT_OPTION_HEDGE_STATUS = "eOptionHedgeStatus"
+
 
 class OptionEngineExt(OptionEngine):
     def __init__(self, main_engine: MainEngine, event_engine: EventEngine):
         super().__init__(main_engine, event_engine)
         self.engine_name = APP_NAME
 
-        self.channel_hedge_engine: ChannelHedgeEngine = ChannelHedgeEngine(self)
+        self.hedge_engine: "HedgeEngine" = HedgeEngine(self)
 
 
-class ChannelHedgeEngine:
+class HedgeEngine:
     def __init__(self, option_engine: OptionEngineExt):
         self.option_engine: OptionEngineExt = option_engine
         self.main_engine: MainEngine = option_engine.main_engine
@@ -52,6 +52,8 @@ class ChannelHedgeEngine:
         self.synthesis_chain_symbols: Dict[str, str] = {}
         self.auto_portfolio_names: List[str] = []
         self.counters: Dict[str, float] = {}
+        self.auto_hedge_flags: Dict[str, bool] = {}
+        self.hedge_parameters: Dict[str, Dict] = {}
 
         self.balance_price: float = 0.0
 
@@ -71,9 +73,30 @@ class ChannelHedgeEngine:
         self.short = self.chase_order_engine.short
         self.cover = self.chase_order_engine.cover
 
+    def start_auto_hedge(self, portfolio_name: str, params: Dict):
+        self.hedge_parameters[portfolio_name] = params
+        if self.is_auto_hedge(portfolio_name):
+            return
+        self.auto_hedge_flags[portfolio_name] = True
+        self.put_hedge_status_event()
+        self.write_log(f"组合{portfolio_name}自动对冲已启动")
+
+    def stop_auto_hedge(self, portfolio_name: str):
+        if not self.is_auto_hedge(portfolio_name):
+            return
+        self.auto_hedge_flags[portfolio_name] = False
+        self.put_hedge_status_event()
+        self.write_log(f"组合{portfolio_name}自动对冲已停止")
+
     def init_counter(self) -> None:
         self.counters['check_delta'] = 0
         self.counters['calculate_balance'] = 0
+
+    def is_auto_hedge(self, portfolio_name: str) -> bool:
+        flag = self.auto_hedge_flags.get(portfolio_name)
+        if flag is None:
+            self.auto_hedge_flags[portfolio_name] = False
+        return flag
 
     def register_event(self) -> None:
         self.event_engine.register(EVENT_TIMER, self.process_timer_event)
@@ -83,7 +106,7 @@ class ChannelHedgeEngine:
         calc_balance_counter = self.counters.get('calculate_balance')
 
         if check_delta_counter > self.check_delta_trigger:
-            self.check_all_delta()
+            self.auto_hedge()
             check_delta_counter = 0
 
         if calc_balance_counter > self.calc_balance_trigger:
@@ -190,11 +213,16 @@ class ChannelHedgeEngine:
         for portfolio_name in self.auto_portfolio_names:
             self.calculate_balance_price(portfolio_name)
     
-    def check_all_delta(self) -> None:
+    def auto_hedge(self) -> None:
         for portfolio_name in self.auto_portfolio_names:
+            if not self.is_auto_hedge(portfolio_name):
+                continue
+            
+            hedge_params = self.hedge_parameters.get(portfolio_name)
+
             balance_price = self.get_balance_price(portfolio_name)
-            up = balance_price * (1 + self.chanel_width)
-            down = balance_price * (1 - self.chanel_width)
+            up = balance_price * (1 + hedge_params['offset_percent'])
+            down = balance_price * (1 - hedge_params['offset_percent'])
 
             underlying = self.get_underlying(portfolio_name)
             if underlying.tick > up:
@@ -214,8 +242,11 @@ class ChannelHedgeEngine:
         atm_call, atm_put = self.get_synthesis_atm(portfolio_name)
         unit_hedge_delta = abs(atm_call.cash_delta) + abs(atm_put.cash_delta)
 
+        hedge_params = self.hedge_parameters.get(portfolio_name)
+        hedge_percent = hedge_params['hedge_percent']
+
         portfolio = self.get_portfolio(portfolio_name)
-        to_hedge_volume = abs(portfolio.pos_delta) * self.hedge_percent / unit_hedge_delta
+        to_hedge_volume = abs(portfolio.pos_delta) * hedge_percent / unit_hedge_delta
         return round(to_hedge_volume)
 
     def action_hedge(self, portfolio_name: str, direction: Direction):
@@ -234,8 +265,31 @@ class ChannelHedgeEngine:
         else:
             self.write_log(f"对冲只支持多或者空")
 
+    def put_hedge_status_event(self) -> None:
+        status = copy(self.auto_hedge_flags)
+        event = Event(EVENT_OPTION_HEDGE_STATUS, status)
+        self.event_engine.put(event)
+
     def write_log(self, msg: str):
         self.main_engine.write_log(msg, source=APP_NAME)
+
+
+class ChannelHedgeAlgo:
+
+    def __init__(self, hedge_engine: HedgeEngine, portfolio: PortfolioData):
+        self.hedge_engine = hedge_engine
+        self.portfolio = portfolio
+
+        self.portfolio_name: str = portfolio.name
+        self.underlying: Optional[UnderlyingData] = None 
+        self.chain_symbol: str = ''
+
+
+        # parameters
+        self.offset_percent: float = 0.0
+        self.hedge_percent: float = 0.0
+
+        # variables
 
 
 class ChaseOrderEngine:
