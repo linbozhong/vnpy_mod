@@ -164,51 +164,6 @@ class HedgeEngine:
         chain = portfolio.get_chain(chain_symbol)
         return chain
 
-    def calculate_pos_delta(self, portfolio_name: str, price: float) -> float:
-        portfolio = self.get_portfolio(portfolio_name)
-        if not portfolio:
-            return
-
-        portfolio_delta = 0
-        for option in portfolio.options.values():
-            if option.net_pos:
-                _price, delta, _gamma, _theta, _vega = option.calculate_greeks(
-                    price,
-                    option.strike_price,
-                    option.interest_rate,
-                    option.time_to_expiry,
-                    option.mid_impv,
-                    option.option_type
-                )
-                delta = delta * option.size * option.net_pos
-                portfolio_delta += delta
-        return portfolio_delta
-
-    def calculate_balance_price(self, portfolio_name: str) -> None:
-        underlying = self.get_underlying(portfolio_name)
-        if not underlying:
-            return
-
-        price = underlying.mid_price
-        delta = self.calculate_pos_delta(portfolio_name, price)
-
-        if delta > 0:
-            while True:
-                last_price = price
-                price += price * 0.003
-                delta = self.calculate_pos_delta(portfolio_name, price)
-                if delta <= 0:
-                    balance_price = (last_price + price) / 2
-                    self.balance_prices[portfolio_name] = balance_price 
-        else:
-            while True:
-                last_price = price
-                price -= price * 0.003
-                delta = self.calculate_pos_delta(portfolio_name, price)
-                if delta >= 0:
-                    balance_price = (last_price + price) / 2
-                    self.balance_prices[portfolio_name] = balance_price
-
     def calc_all_balance(self) -> None:
         for portfolio_name in self.auto_portfolio_names:
             self.calculate_balance_price(portfolio_name)
@@ -276,20 +231,78 @@ class HedgeEngine:
 
 class ChannelHedgeAlgo:
 
-    def __init__(self, hedge_engine: HedgeEngine, portfolio: PortfolioData):
+    def __init__(self, chain_symbol: str, hedge_engine: HedgeEngine, portfolio: PortfolioData):
+        self.chain_symbol = chain_symbol
         self.hedge_engine = hedge_engine
         self.portfolio = portfolio
 
-        self.portfolio_name: str = portfolio.name
-        self.underlying: Optional[UnderlyingData] = None 
-        self.chain_symbol: str = ''
-
+        self.chain: ChainData = self.portfolio.get_chain(self.chain_symbol)
+        self.underlying: UnderlyingData = self.chain.underlying
 
         # parameters
         self.offset_percent: float = 0.0
         self.hedge_percent: float = 0.0
 
         # variables
+        self.active: bool = False
+
+        self.balance_price: float = 0.0
+        self.up_price: float = 0.0
+        self.down_price: float = 0.0
+
+        self.net_pos = self.chain.net_pos
+        self.pos_delta = self.chain.pos_delta
+
+    def calculate_pos_delta(self, price: float) -> float:
+        """
+        Calculate pos delta at specific price.
+        """
+        chain_delta = 0
+        for option in self.chain.options.values():
+            if option.net_pos:
+                _price, delta, _gamma, _theta, _vega = option.calculate_greeks(
+                    price,
+                    option.strike_price,
+                    option.interest_rate,
+                    option.time_to_expiry,
+                    option.mid_impv,
+                    option.option_type
+                )
+                delta = delta * option.size * option.net_pos
+                chain_delta += delta
+        return chain_delta
+
+    def calculate_balance_price(self) -> float:
+        """
+        Search balcance price by bisection method.
+        """
+        left_end = 0
+        right_end = 0
+        pricetick = self.underlying.pricetick
+        try_price = self.underlying.mid_price
+        while True:
+            try_delta = self.calculate_pos_delta(try_price)
+            if try_delta > 0:
+                left_end = try_price
+                # if right boudary is uncentain
+                if right_end == 0 or try_price == right_end:
+                    right_end = try_price * 1.05
+                    try_price = right_end
+                else:
+                    try_price = (left_end + right_end) / 2
+            elif try_delta < 0:
+                right_end = try_price
+                # if left boundary is uncertain
+                if left_end == 0 or try_price == left_end:
+                    left_end = try_price * 0.95
+                    try_price = left_end
+                else:
+                    try_price = (left_end + right_end) / 2
+            else:
+                return try_price
+            
+            if right_end - left_end < pricetick * 2:
+                return (left_end + right_end) / 2
 
 
 class ChaseOrderEngine:
