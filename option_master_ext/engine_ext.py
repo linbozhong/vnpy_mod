@@ -24,8 +24,8 @@ from vnpy.app.option_master.base import (
 
 APP_NAME = "OptionMasterExt"
 
+EVENT_OPTION_STRATEGY_ORDER = "eOptionStrategyOrder"
 EVENT_OPTION_HEDGE_STATUS = "eOptionHedgeStatus"
-EVENT_OPTION_STRATEGY_TRADE_FINISHED = "eOptionStrategyTradeFinished"
 
 STRATEGY_HEDGE_DELTA_LONG = "hedge_delta_long"
 STRATEGY_HEDGE_DELTA_SHORT = "hedge_delta_short"
@@ -45,17 +45,39 @@ class OptionStrategy(Enum):
     STRADDLE = "跨式"
     STRANGLE = "宽跨式"
 
+class HedgeStatus(Enum):
+    LISTENING = "监测"
+    HEDGING = "对冲中"
+
+class StrategyOrderStatus(Enum):
+    SUBMITTING = "提交中"
+    SENDED = "已发送"
+    FINISHED = "已完成"
+
 
 @dataclass
-class OptionStrategyOrder(BaseData):
-    """
-    Candlestick bar data of a certain trading period.
-    """
-
+class OptionStrategyOrder:
     chain_symbol: str
-    strategy_name: OptionStrategy = None
-    direction: Direction = None
+    strategy_name: OptionStrategy
+    direction: Direction
+    strategy_ref: int
+    send_at_break: bool
+    status: StrategyOrderStatus = StrategyOrderStatus.SUBMITTING
+    reqs: List[OrderRequest] = []
+    active_orderids: Set[str] = set()
 
+    def __post_init__(self):
+        """"""
+        self.strategy_id = f"{self.strategy_name.value}.{self.direction.value}.{self.strategy_ref}"
+
+    def is_finished(self) -> bool:
+        return self.status == StrategyOrderStatus.FINISHED
+
+    def is_active(self) -> bool:
+        return self.status == StrategyOrderStatus.SENDED
+
+    def add_req(self, req: OrderRequest):
+        self.reqs.append(req)
 
 
 class OptionEngineExt(OptionEngine):
@@ -71,6 +93,7 @@ class OptionEngineExt(OptionEngine):
         self.sell: Optional[Callable] = None
         self.short: Optional[Callable] = None
         self.cover: Optional[Callable] = None
+        self.send_strategy_order: Optional[Callable] = None
 
         self.add_order_function()
 
@@ -79,6 +102,7 @@ class OptionEngineExt(OptionEngine):
         self.sell = self.strategy_trader.sell
         self.short = self.strategy_trader.short
         self.cover = self.strategy_trader.cover
+        self.send_strategy_order = self.strategy_trader.send_strategy_order
 
 
 class HedgeEngine:
@@ -131,16 +155,11 @@ class HedgeEngine:
 
     def register_event(self) -> None:
         self.event_engine.register(EVENT_TIMER, self.process_timer_event)
-        self.event_engine.register(EVENT_OPTION_STRATEGY_TRADE_FINISHED, self.process_trade_finished)
+        self.event_engine.register(EVENT_OPTION_STRATEGY_ORDER, self.process_strategy_order)
 
-    def process_trade_finished(self, event: Event) -> None:
-        strategy_id = event.data
-        strategy_name, chain_symbol, count = strategy_id.split('_')
-
-        if strategy_name == STRATEGY_HEDGE_DELTA_LONG or strategy_name == STRATEGY_HEDGE_DELTA_SHORT:
-            algo = self.hedge_algos[chain_symbol]
-            algo.calculate_balance_price()
-            self.write_log(f"策略号{strategy_id}执行完毕.") 
+    def process_strategy_order(self, event: Event) -> None:
+        strategy_order = event.data
+        pass
 
     def process_timer_event(self, event: Event) -> None:
         check_delta_counter = self.counters.get('check_delta')
@@ -173,15 +192,19 @@ class ChannelHedgeAlgo:
         self.hedge_engine = hedge_engine
         self.portfolio = portfolio
 
+        self.option_engine: OptionEngineExt = self.hedge_engine.option_engine
         self.chain: ChainData = self.portfolio.get_chain(self.chain_symbol)
         self.underlying: UnderlyingData = self.chain.underlying
 
         # parameters
         self.offset_percent: float = 0.0
         self.hedge_percent: float = 0.0
-        self.ignore_circuit_breaker = True
+        self.send_at_break = True
 
         # variables
+        self.strategy_orders: Dict[str, OptionStrategyOrder] = {}
+        self.active_strategyids: Set[str] = set()
+
         self.active: bool = False
 
         self.balance_price: float = 0.0
@@ -266,7 +289,6 @@ class ChannelHedgeAlgo:
         self.up_price = self.balance_price * (1 + self.offset_percent)
         self.down_price = self.balance_price * (1 - self.offset_percent)
 
-
     def start_auto_hedge(self, params: Dict):
         if self.active:
             return
@@ -295,31 +317,35 @@ class ChannelHedgeAlgo:
             self.write_log(f"期权链{self.chain_symbol} Delta偏移量少于最小对冲单元值")
             return
 
-        if not self.ignore_circuit_breaker:
-            call_tick = self.hedge_engine.main_engine.get_tick(atm_call.vt_symbol)
-            put_tick = self.hedge_engine.main_engine.get_tick(atm_put.vt_symbol)
-
-            call_circuit_breaker = not call_tick.bid_price_2 and not call_tick.ask_price_2
-            put_circuit_breaker = not put_tick.bid_price_2 and not put_tick.ask_price_2
-
-            if call_circuit_breaker or put_circuit_breaker:
-                self.write_log(f"期权链{self.chain_symbol}合成期权合约触发熔断机制，请稍后重试")
-                return
-
         self.hedge_ref += 1
         if direction == Direction.LONG:
-            strategy_id = f"{STRATEGY_HEDGE_DELTA_LONG}_{self.chain_symbol}_{self.hedge_ref}"
-            self.hedge_engine.option_engine.buy(strategy_id, atm_call.vt_symbol, to_hedge_volume)
-            self.hedge_engine.option_engine.sell(strategy_id, atm_put.vt_symbol, to_hedge_volume)
+            call_req = self.option_engine.buy(atm_call.vt_symbol, to_hedge_volume)
+            put_req = self.option_engine.short(atm_put.vt_symbol, to_hedge_volume)
         elif direction == Direction.SHORT:
-            strategy_id = f"{STRATEGY_HEDGE_DELTA_SHORT}_{self.chain_symbol}_{self.hedge_ref}"
-            self.hedge_engine.option_engine.buy(strategy_id, atm_put.vt_symbol, to_hedge_volume)
-            self.hedge_engine.option_engine.sell(strategy_id, atm_call.vt_symbol, to_hedge_volume)
+            call_req = self.option_engine.short(atm_call.vt_symbol, to_hedge_volume)
+            put_req = self.option_engine.buy(atm_put.vt_symbol, to_hedge_volume)
         else:
             self.write_log(f"对冲只支持多或者空")
 
+        strategy_order = OptionStrategyOrder(
+            chain_symbol=self.chain_symbol,
+            strategy_name=OptionStrategy.SYNTHESIS,
+            direction=direction,
+            strategy_ref=self.hedge_ref,
+            send_at_break=True
+        )
+        strategy_order.add_req(call_req)
+        strategy_order.add_req(put_req)
+        self.option_engine.send_strategy_order(strategy_order)
+
+        self.strategy_orders[strategy_order.strategy_id] = strategy_order
+        self.active_strategyids.add(strategy_order.strategy_id)
+
     def check_hedge_signal(self) -> None:
         if not self.active:
+            return
+
+        if self.active_strategyids:
             return
         
         tick = self.underlying.tick
@@ -343,15 +369,13 @@ class StrategyTrader:
         self.main_engine: MainEngine = option_engine.main_engine
         self.event_engine: EventEngine = option_engine.event_engine
 
-        self.strategy_active_orderids: Dict[str, Set[str]] = {}
-        self.orderid_to_strategyid: Dict[str, str] = {}
-        self.active_orderids: Set[str] = set()
-        self.strategy_finished: Dict[str, bool] = {}
-        
         self.pay_up: int = 0
         self.cancel_interval: int = 3
         self.max_volume: int = 30
-        
+
+        self.orderid_to_strategyid: Dict[str, str] = {}
+        self.active_orderids: Set[str] = set()
+        self.strategy_orders: Dict[str, OptionStrategyOrder] = {}
         self.cancel_counts: Dict[str, int] = {}
 
         self.register_event()
@@ -369,7 +393,8 @@ class StrategyTrader:
 
         if not order.is_active():
             strategy_id = self.orderid_to_strategyid[vt_orderid]
-            self.strategy_active_orderids[strategy_id].remove(vt_orderid)
+            strategy_order = self.strategy_orders[strategy_id]
+            strategy_order.active_orderids.remove(vt_orderid)
 
             self.active_orderids.remove(vt_orderid)
             self.cancel_counts.pop(vt_orderid, None)
@@ -378,37 +403,97 @@ class StrategyTrader:
             self.resend_order(order)
 
     def process_timer_event(self, event: Event) -> None:
-        self.check_cancel()
+        self.chase_order()
+        self.send_order()
 
     def resend_order(self, order: OrderData) -> None:
         new_volume = order.volume - order.traded
         if new_volume:
             strategy_id = self.orderid_to_strategyid[order.vt_orderid]
-            self.send_order(strategy_id, order.vt_symbol, order.direction, order.offset, new_volume)
+            strategy_order = self.strategy_orders[strategy_id]
+
+            new_req = self.generate_order_req(
+                vt_symbol=order.vt_symbol,
+                direction=order.direction,
+                offset=order.offset,
+                volume=new_volume,
+            )
+            strategy_order.add_req(new_req)
 
     def cancel_order(self, vt_orderid: str) -> None:
         order = self.main_engine.get_order(vt_orderid)
         req = order.create_cancel_request()
         self.main_engine.cancel_order(req, order.gateway_name)
 
-    def check_cancel(self) -> None:
-        for strategy_id, orders in self.strategy_active_orderids.items():
-            if self.strategy_finished[strategy_id]:
+    def chase_order(self) -> None:
+        for strategy_order in self.strategy_orders.values():
+            if not strategy_order.is_active():
                 continue
 
-            if not orders:
-                self.strategy_finished[strategy_id] = True
-                self.put_stategy_trade_finished_event(strategy_id)
+            active_orders = strategy_order.active_orderids()
+            if not active_orders:
+                strategy_order.status = StrategyOrderStatus.FINISHED
+                self.put_stategy_order_event(strategy_order)
+            else:
+                for vt_orderid in active_orders:
+                    if self.cancel_counts[vt_orderid] > self.cancel_interval:
+                        order = self.main_engine.get_order(vt_orderid)
+                        if not self.is_contract_break(order.vt_symbol):
+                            self.cancel_counts[vt_orderid] = 0
+                            self.cancel_order(vt_orderid)
+                        else:
+                            self.cancel_counts[vt_orderid] = 0
+                    self.cancel_counts[vt_orderid] += 1
+
+    def send_order(self) -> None:
+        for strategy_id, strategy_order in self.strategy_orders.items():
+            if strategy_order.is_finished():
                 continue
 
-            for vt_orderid in orders:
-                if self.cancel_counts[vt_orderid] > self.cancel_interval:
-                    order = self.main_engine.get_order(vt_orderid)
-                    tick = self.main_engine.get_tick(order.vt_symbol)
-                    if tick.bid_price_2 and tick.ask_price_2:
-                        self.cancel_counts[vt_orderid] = 0
-                        self.cancel_order(vt_orderid)
-                self.cancel_counts[vt_orderid] += 1
+            if self.is_strategy_order_break(strategy_order) and not strategy_order.send_at_break:
+                continue
+
+            reqs = strategy_order.reqs
+            while reqs:
+                req = reqs.pop()
+
+                contract = self.main_engine.get_contract(req.vt_symbol)
+                if not req.price:
+                    req.price = self.get_default_order_price(req.vt_symbol, req.direction)
+
+                split_req_list = self.split_req(req)
+                for split_req in split_req_list:
+                    vt_orderid = self.main_engine.send_order(split_req, contract.gateway_name)
+                    strategy_order.active_orderids.add(vt_orderid)
+
+                    self.active_orderids.add(vt_orderid)
+                    self.orderid_to_strategyid[vt_orderid] = strategy_id
+                    self.cancel_counts[vt_orderid] = 0
+
+            if not strategy_order.is_active():
+                strategy_order.status == StrategyOrderStatus.SENDED
+                self.put_stategy_order_event(strategy_order)
+
+    def get_default_order_price(self, vt_symbol: str, direction: Direction) -> float:
+        contract = self.main_engine.get_contract(vt_symbol)
+        tick = self.main_engine.get_tick(vt_symbol)
+        if direction == Direction.LONG:
+            price = min(tick.ask_price_1 + contract.pricetick * self.pay_up, tick.limit_up)
+
+        else:
+            price = max(tick.bid_price_1 - contract.pricetick * self.pay_up, tick.limit_down)
+        return price
+
+    def is_strategy_order_break(self, strategy_order: OptionStrategyOrder) -> bool:
+        for req in strategy_order.reqs:
+            tick = self.main_engine.get_tick(req.vt_symbol)
+            if not tick.ask_price_2 and not tick.bid_price_2:
+                return True
+        return False
+
+    def is_contract_break(self, vt_symbol: str) -> bool:
+        tick = self.main_engine.get_tick(vt_symbol)
+        return not tick.ask_price_2 and not tick.bid_price_2
 
     def split_req(self, req: OrderRequest):
         if req.volume <= self.max_volume:
@@ -426,63 +511,43 @@ class StrategyTrader:
             req_list.append(req_r)
         return req_list
 
-    def send_order(
+    def send_strategy_order(
         self,
-        strategy_id: str,
+        strategy_order: OptionStrategyOrder
+    ) -> None:
+        self.strategy_orders[strategy_order.strategy_id] = strategy_order
+
+    def generate_order_req(
+        self,
         vt_symbol: str,
         direction: Direction,
         offset: Offset,
         volume: float,
-        price: Optional[float] = None
-    ) -> str:
+        price: float = 0
+    ) -> OrderRequest:
         contract = self.main_engine.get_contract(vt_symbol)
-        tick = self.main_engine.get_tick(vt_symbol)
-
-        if not price:
-            if direction == Direction.LONG:
-                price = tick.ask_price_1 + contract.pricetick * self.pay_up
-            else:
-                price = tick.bid_price_1 - contract.pricetick * self.pay_up
-
-        original_req = OrderRequest(
+        req = OrderRequest(
             symbol=contract.symbol,
             exchange=contract.exchange,
             direction=direction,
             type=OrderType.LIMIT,
             volume=volume,
-            price=price
+            price=price 
         )
+        return req
 
-        splited_req_list = self.split_req(original_req)
+    def buy(self, vt_symbol: str, volume: float, price: float = 0):
+        return self.generate_order_req(vt_symbol, Direction.LONG, Offset.OPEN, volume, price)
 
-        strategy_orders = self.strategy_active_orderids.get(strategy_id)
-        if strategy_orders is None:
-            strategy_orders = set()
-            self.strategy_active_orderids[strategy_id] = strategy_orders
+    def sell(self, vt_symbol: str, volume: float, price: float = 0):
+        return self.generate_order_req(vt_symbol, Direction.SHORT, Offset.CLOSE, volume, price)
 
-        vt_orderids = []
-        for req in splited_req_list:
-            vt_orderid = self.main_engine.send_order(req, contract.gateway_name)
-            strategy_orders.add(vt_orderid)
-            self.active_orderids.add(vt_orderid)
-            self.orderid_to_strategyid[vt_orderid] = strategy_id
-            vt_orderids.append(vt_orderid)
-            self.cancel_counts[vt_orderid] = 0
+    def short(self, vt_symbol: str, volume: float, price: float = 0):
+        return self.generate_order_req(vt_symbol, Direction.SHORT, Offset.OPEN, volume, price)
 
-        return vt_orderids
+    def cover(self, vt_symbol: str, volume: float, price: float = 0):
+        return self.generate_order_req(vt_symbol, Direction.LONG, Offset.CLOSE, volume, price)
 
-    def buy(self, strategy_id: str, vt_symbol: str, volume: float, price: Optional[float] = None):
-        return self.send_order(strategy_id, vt_symbol, Direction.LONG, Offset.OPEN, volume, price)
-
-    def sell(self, strategy_id: str, vt_symbol: str, volume: float, price: Optional[float] = None):
-        return self.send_order(strategy_id, vt_symbol, Direction.SHORT, Offset.CLOSE, volume, price)
-
-    def short(self, strategy_id: str, vt_symbol: str, volume: float, price: Optional[float] = None):
-        return self.send_order(strategy_id, vt_symbol, Direction.SHORT, Offset.OPEN, volume, price)
-
-    def cover(self, strategy_id: str, vt_symbol: str, volume: float, price: Optional[float] = None):
-        return self.send_order(strategy_id, vt_symbol, Direction.LONG, Offset.CLOSE, volume, price)
-
-    def put_stategy_trade_finished_event(self, strategy_id: str) -> None:
-        event = Event(EVENT_OPTION_STRATEGY_TRADE_FINISHED, strategy_id)
+    def put_stategy_order_event(self, strategy_order: OptionStrategyOrder) -> None:
+        event = Event(EVENT_OPTION_STRATEGY_ORDER, strategy_order)
         self.event_engine.put(event)
