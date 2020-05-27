@@ -2,7 +2,7 @@ import typing
 from typing import Optional, Dict, List, Set, Callable, Tuple
 from copy import copy
 from enum import Enum
-from dataclasses import dataclass
+from datetime import datetime
 
 from vnpy.event import Event, EventEngine
 from vnpy.trader.event import (
@@ -25,7 +25,7 @@ from vnpy.app.option_master.base import (
 APP_NAME = "OptionMasterExt"
 
 EVENT_OPTION_STRATEGY_ORDER = "eOptionStrategyOrder"
-EVENT_OPTION_HEDGE_STATUS = "eOptionHedgeStatus"
+EVENT_OPTION_HEDGE_ALGO_STATUS = "eOptionHedgeAlgoStatus"
 
 STRATEGY_HEDGE_DELTA_LONG = "hedge_delta_long"
 STRATEGY_HEDGE_DELTA_SHORT = "hedge_delta_short"
@@ -46,7 +46,8 @@ class OptionStrategy(Enum):
     STRANGLE = "宽跨式"
 
 class HedgeStatus(Enum):
-    LISTENING = "监测"
+    NOTSTART = "未启动"
+    RUNNING = "监测中"
     HEDGING = "对冲中"
 
 class StrategyOrderStatus(Enum):
@@ -55,20 +56,32 @@ class StrategyOrderStatus(Enum):
     FINISHED = "已完成"
 
 
-@dataclass
 class OptionStrategyOrder:
     chain_symbol: str
     strategy_name: OptionStrategy
     direction: Direction
     strategy_ref: int
     send_at_break: bool
+
     status: StrategyOrderStatus = StrategyOrderStatus.SUBMITTING
     reqs: List[OrderRequest] = []
     active_orderids: Set[str] = set()
+    time: str = ""
 
-    def __post_init__(self):
-        """"""
+    def __init__(
+        self,
+        chain_symbol: str,
+        strategy_name: OptionStrategy,
+        direction: Direction,
+        strategy_ref: int,
+        send_at_break: bool
+    ):
         self.strategy_id = f"{self.strategy_name.value}.{self.direction.value}.{self.strategy_ref}"
+        self.time = datetime.now().strftime("%H:%M:%S")
+
+        self.status: StrategyOrderStatus = StrategyOrderStatus.SUBMITTING
+        self.reqs: List[OrderRequest] = []
+        self.active_orderids: Set[str] = set()
 
     def is_finished(self) -> bool:
         return self.status == StrategyOrderStatus.FINISHED
@@ -85,8 +98,10 @@ class OptionEngineExt(OptionEngine):
         super().__init__(main_engine, event_engine)
         self.engine_name = APP_NAME
 
-        self.hedge_engine: "HedgeEngine" = HedgeEngine(self)
+        self.inited: bool = False
+
         self.strategy_trader: "StrategyTrader" = StrategyTrader(self)
+        self.hedge_engine: "HedgeEngine" = HedgeEngine(self)
 
         # order funcitons
         self.buy: Optional[Callable] = None
@@ -104,6 +119,13 @@ class OptionEngineExt(OptionEngine):
         self.cover = self.strategy_trader.cover
         self.send_strategy_order = self.strategy_trader.send_strategy_order
 
+    def init_all_portfolios(self) -> None:
+        portfolio_settings = self.setting['portfolio_settings']
+        for portfolio_name in portfolio_settings:
+            self.init_portfolio(portfolio_name)
+        
+        self.inited = True
+
 
 class HedgeEngine:
     def __init__(self, option_engine: OptionEngineExt):
@@ -115,24 +137,34 @@ class HedgeEngine:
         # parameters
         self.check_delta_trigger: int = 5
         self.calc_balance_trigger: int = 300
-        self.chanel_width: float = 0.0
+        self.offset_percent: float = 0.0
         self.hedge_percent: float = 0.0
 
         # variables
+        self.chains: Dict[str, ChainData] = {}
         self.hedge_algos: Dict[str, "ChannelHedgeAlgo"] = {}
-
-        # self.balance_prices: Dict[str, float] = {}
-        # self.underlyings: Dict[str, UnderlyingData] = {}
-        # self.underlying_symbols: Dict[str, str] = {}
-        # self.synthesis_chain_symbols: Dict[str, str] = {}
-        # self.auto_portfolio_names: List[str] = []
         self.counters: Dict[str, float] = {}
-        # self.auto_hedge_flags: Dict[str, bool] = {}
-        # self.hedge_parameters: Dict[str, Dict] = {}
 
-        # init
-        self.init_hedge_algos()
-        self.init_counter()
+    def init_counter(self) -> None:
+        self.counters['check_delta'] = 0
+        self.counters['calculate_balance'] = 0
+
+    def init_chains(self) -> None:
+        for portfolio in self.option_engine.active_portfolios.values():
+            self.chains.update(portfolio.chains)
+
+    def init_hedge_algos(self) -> None:
+        for chain_symbol, chain in self.chains.items():
+            algo = ChannelHedgeAlgo(chain_symbol, chain, self)
+            self.hedge_algos[chain_symbol] = algo
+
+    def init_engine(self) -> None:
+        if self.option_engine.inited:
+            self.init_counter()
+            self.init_chains()
+            self.init_hedge_algos()
+        else:
+            self.write_log(f"期权扩展主引擎尚未完成初始化")
 
 
     def start_all_auto_hedge(self):
@@ -143,23 +175,23 @@ class HedgeEngine:
         for algo in self.hedge_algos:
             algo.stop_auto_hedge()
 
-    def init_counter(self) -> None:
-        self.counters['check_delta'] = 0
-        self.counters['calculate_balance'] = 0
-
-    def init_hedge_algos(self) -> None:
-        for portfolio in self.option_engine.active_portfolios.values():
-            for chain_symbol in portfolio.chains:
-                algo = ChannelHedgeAlgo(chain_symbol, self, portfolio)
-                self.hedge_algos[chain_symbol] = algo
-
     def register_event(self) -> None:
         self.event_engine.register(EVENT_TIMER, self.process_timer_event)
         self.event_engine.register(EVENT_OPTION_STRATEGY_ORDER, self.process_strategy_order)
 
     def process_strategy_order(self, event: Event) -> None:
         strategy_order = event.data
-        pass
+        algo = self.hedge_algos[strategy_order.chain_symbol]
+
+        if strategy_order.is_active():
+            algo.active_strategyids.add(strategy_order.strategy_id)
+
+        if strategy_order.is_finished():
+            algo.active_strategyids.remove(strategy_order.strategy_id)
+            if not algo.is_hedging():
+                algo.status = HedgeStatus.RUNNING
+
+            algo.calculate_balance_price()
 
     def process_timer_event(self, event: Event) -> None:
         check_delta_counter = self.counters.get('check_delta')
@@ -176,9 +208,18 @@ class HedgeEngine:
         check_delta_counter += 1
         calc_balance_counter += 1
 
-    def put_hedge_status_event(self) -> None:
-        status = copy(self.auto_hedge_flags)
-        event = Event(EVENT_OPTION_HEDGE_STATUS, status)
+    def auto_hedge(self) -> None:
+        for algo in self.hedge_algos.values():
+            algo.check_hedge_signal()
+
+    def calc_all_balance(self) -> None:
+        for algo in self.hedge_algos.values():
+            if algo.is_hedging():
+                continue
+            algo.calculate_balance_price()
+
+    def put_hedge_algo_status_event(self, algo: "ChannelHedgeAlgo") -> None:
+        event = Event(EVENT_OPTION_HEDGE_ALGO_STATUS, algo)
         self.event_engine.put(event)
 
     def write_log(self, msg: str):
@@ -187,13 +228,12 @@ class HedgeEngine:
 
 class ChannelHedgeAlgo:
 
-    def __init__(self, chain_symbol: str, hedge_engine: HedgeEngine, portfolio: PortfolioData):
+    def __init__(self, chain_symbol: str, chain: ChainData, hedge_engine: HedgeEngine):
         self.chain_symbol = chain_symbol
+        self.chain = chain
         self.hedge_engine = hedge_engine
-        self.portfolio = portfolio
 
         self.option_engine: OptionEngineExt = self.hedge_engine.option_engine
-        self.chain: ChainData = self.portfolio.get_chain(self.chain_symbol)
         self.underlying: UnderlyingData = self.chain.underlying
 
         # parameters
@@ -205,7 +245,8 @@ class ChannelHedgeAlgo:
         self.strategy_orders: Dict[str, OptionStrategyOrder] = {}
         self.active_strategyids: Set[str] = set()
 
-        self.active: bool = False
+        # self.active: bool = False
+        self.status: HedgeStatus = HedgeStatus.NOTSTART
 
         self.balance_price: float = 0.0
         self.up_price: float = 0.0
@@ -220,6 +261,12 @@ class ChannelHedgeAlgo:
 
         self.write_log = self.hedge_engine.write_log
         self.parameters = ['offset_percent', 'hedge_percent']
+
+    def is_hedging(self) -> bool:
+        return len(self.active_strategyids) > 0
+
+    def is_active(self) -> bool:
+        return self.status == HedgeStatus.RUNNING or self.status == HedgeStatus.HEDGING
 
     def get_synthesis_atm(self) -> Tuple[OptionData, OptionData]:
         chain = self.chain
@@ -289,8 +336,10 @@ class ChannelHedgeAlgo:
         self.up_price = self.balance_price * (1 + self.offset_percent)
         self.down_price = self.balance_price * (1 - self.offset_percent)
 
+        self.put_hedge_algo_status_event(self)
+
     def start_auto_hedge(self, params: Dict):
-        if self.active:
+        if self.is_active():
             return
 
         for param_name in self.parameters:
@@ -298,16 +347,16 @@ class ChannelHedgeAlgo:
                 value = params[param_name]
                 setattr(self, param_name, value)
 
-        self.active = True
-        self.put_hedge_status_event()
+        self.status = HedgeStatus.RUNNING
+        self.put_hedge_algo_status_event(self)
         self.write_log(f"期权链{self.chain_symbol}自动对冲已启动")
 
     def stop_auto_hedge(self, portfolio_name: str):
-        if not self.active:
+        if not self.is_active():
             return
 
-        self.active = False
-        self.put_hedge_status_event()
+        self.status = HedgeStatus.NOTSTART
+        self.put_hedge_algo_status_event(self)
         self.write_log(f"期权链{self.chain_symbol}自动对冲已停止")
 
     def action_hedge(self, direction: Direction):
@@ -317,7 +366,6 @@ class ChannelHedgeAlgo:
             self.write_log(f"期权链{self.chain_symbol} Delta偏移量少于最小对冲单元值")
             return
 
-        self.hedge_ref += 1
         if direction == Direction.LONG:
             call_req = self.option_engine.buy(atm_call.vt_symbol, to_hedge_volume)
             put_req = self.option_engine.short(atm_put.vt_symbol, to_hedge_volume)
@@ -327,6 +375,7 @@ class ChannelHedgeAlgo:
         else:
             self.write_log(f"对冲只支持多或者空")
 
+        self.hedge_ref += 1
         strategy_order = OptionStrategyOrder(
             chain_symbol=self.chain_symbol,
             strategy_name=OptionStrategy.SYNTHESIS,
@@ -338,14 +387,16 @@ class ChannelHedgeAlgo:
         strategy_order.add_req(put_req)
         self.option_engine.send_strategy_order(strategy_order)
 
+        self.status = HedgeStatus.HEDGING
         self.strategy_orders[strategy_order.strategy_id] = strategy_order
         self.active_strategyids.add(strategy_order.strategy_id)
+        self.put_hedge_algo_status_event(self)
 
     def check_hedge_signal(self) -> None:
-        if not self.active:
+        if not self.is_active():
             return
 
-        if self.active_strategyids:
+        if self.is_hedging():
             return
         
         tick = self.underlying.tick
@@ -356,11 +407,8 @@ class ChannelHedgeAlgo:
         else:
             return
 
-    def put_hedge_status_event(self) -> None:
-        # status = copy(self.auto_hedge_flags)
-        # event = Event(EVENT_OPTION_HEDGE_STATUS, status)
-        # self.event_engine.put(event)
-        pass
+    def put_hedge_algo_status_event(self, algo: "ChannelHedgeAlgo") -> None:
+        self.hedge_engine.put_hedge_algo_status_event(algo)
 
 
 class StrategyTrader:
