@@ -7,13 +7,49 @@ from vnpy.trader.ui.widget import BaseCell, DirectionCell, EnumCell, BaseMonitor
 
 
 from vnpy.app.option_master.base import ChainData
+from vnpy.app.option_master.ui.widget import PortfolioDialog
 from vnpy.app.option_master.ui.monitor import MonitorCell, PosCell
 from vnpy.app.option_master.ui.manager import AlgoSpinBox
 
 from ..engine_ext import (
-    APP_NAME, EVENT_OPTION_HEDGE_ALGO_STATUS,
-    OptionEngineExt, HedgeEngine
+    APP_NAME, 
+    EVENT_OPTION_HEDGE_ALGO_STATUS, EVENT_OPTION_STRATEGY_ORDER, EVENT_OPTION_HEDGE_ALGO_LOG,
+    OptionEngineExt, HedgeEngine, ChannelHedgeAlgo
 )
+
+class PortfolioDialogExt(PortfolioDialog):
+    def __init__(self, option_engine: OptionEngineExt, portfolio_name: str):
+        super().__init__(option_engine, portfolio_name)
+
+    def update_portfolio_setting(self) -> None:
+        """"""
+        model_name = self.model_name_combo.currentText()
+        interest_rate = self.interest_rate_spin.value() / 100
+
+        if self.inverse_combo.currentIndex() == 0:
+            inverse = False
+        else:
+            inverse = True
+
+        precision = self.precision_spin.value()
+
+        chain_underlying_map = {}
+        for chain_symbol, combo in self.combos.items():
+            underlying_symbol = combo.currentText()
+
+            if underlying_symbol:
+                chain_underlying_map[chain_symbol] = underlying_symbol
+
+        self.option_engine.update_portfolio_setting(
+            self.portfolio_name,
+            model_name,
+            interest_rate,
+            chain_underlying_map,
+            inverse,
+            precision
+        )
+
+        self.close()
 
 
 class HedgeChainCombo(QtWidgets.QComboBox):
@@ -79,7 +115,7 @@ class OptionManagerExt(QtWidgets.QWidget):
         self.event_engine = event_engine
         self.option_engine = main_engine.get_engine(APP_NAME)
 
-        self.hedge_manager: HedgeMonitor = None
+        self.hedge_manager: "HedgeManager" = None
         self.volatility_trading = None
 
         self.init_ui()
@@ -88,6 +124,16 @@ class OptionManagerExt(QtWidgets.QWidget):
     def init_ui(self) -> None:
         """"""
         self.setWindowTitle("OptionMasterExt")
+
+        self.portfolio_combo = QtWidgets.QComboBox()
+        self.portfolio_combo.setFixedWidth(150)
+        self.update_portfolio_combo()
+
+        self.portfolio_button = QtWidgets.QPushButton("配置")
+        self.portfolio_button.clicked.connect(self.open_portfolio_dialog)
+
+        self.init_button = QtWidgets.QPushButton("初始化")
+        self.init_button.clicked.connect(self.init_engine)
 
         self.volatility_button = QtWidgets.QPushButton("波动率交易")
         self.hedge_button = QtWidgets.QPushButton("Delta对冲")
@@ -99,14 +145,52 @@ class OptionManagerExt(QtWidgets.QWidget):
             button.setEnabled(False)
 
         hbox = QtWidgets.QHBoxLayout()
+        hbox.addWidget(self.portfolio_combo)
+        hbox.addWidget(self.portfolio_button)
+        hbox.addWidget(self.init_button)
         hbox.addWidget(self.volatility_button)
         hbox.addWidget(self.hedge_button)
 
         self.setLayout(hbox)
 
+    def update_portfolio_combo(self) -> None:
+        """"""
+        if not self.portfolio_combo.isEnabled():
+            return
+
+        self.portfolio_combo.clear()
+        portfolio_names = self.option_engine.get_portfolio_names()
+        self.portfolio_combo.addItems(portfolio_names)
+
+
+    def open_portfolio_dialog(self) -> None:
+        """"""
+        portfolio_name = self.portfolio_combo.currentText()
+        if not portfolio_name:
+            return
+
+        self.portfolio_name = portfolio_name
+
+        dialog = PortfolioDialogExt(self.option_engine, portfolio_name)
+        dialog.exec_()
+
+    def init_engine(self) -> None:
+        self.option_engine.init_engine()
+
+        self.portfolio_combo.setEnabled(False)
+        self.portfolio_button.setEnabled(False)
+        self.init_button.setEnabled(False)
+        
+        self.init_widgets()
+
+    def init_widgets(self) -> None:
+        self.hedge_manager = HedgeManager(self.option_engine)
+        self.hedge_button.clicked.connect(self.hedge_manager.show)
+
+        self.hedge_button.setEnabled(True)
+
     def register_event(self) -> None:
         pass
-
 
 
 class StrategyOrderMonitor(BaseMonitor):
@@ -134,9 +218,9 @@ class HedgeMonitor(QtWidgets.QTableWidget):
     headers: List[Dict] = [
         {"name": "chain_symbol", "display": "期权链", "cell": MonitorCell},
         {"name": "status", "display": "状态", "cell": MonitorCell},
-        {"name": "balance", "display": "中性基准价", "cell": MonitorCell},
-        {"name": "up_threshold", "display": "上阈值", "cell": MonitorCell},
-        {"name": "down_threshold", "display": "下阈值", "cell": MonitorCell},
+        {"name": "balance_price", "display": "中性基准价", "cell": MonitorCell},
+        {"name": "up_price", "display": "上阈值", "cell": MonitorCell},
+        {"name": "down_price", "display": "下阈值", "cell": MonitorCell},
         {"name": "pos_delta", "display": "Delta偏移量", "cell": MonitorCell},
         {"name": "net_pos", "display": "组合净仓", "cell": PosCell},
         {"name": "offset_percent", "display": "偏移比例", "cell": HedgePercentSpinBox},
@@ -159,6 +243,7 @@ class HedgeMonitor(QtWidgets.QTableWidget):
         self.register_event()
 
     def init_ui(self) -> None:
+        print(self.chains)
         self.setWindowTitle("通道对冲")
         self.verticalHeader().setVisible(False)
         self.setEditTriggers(self.NoEditTriggers)
@@ -171,7 +256,7 @@ class HedgeMonitor(QtWidgets.QTableWidget):
         self.setHorizontalHeaderLabels(labels)
 
         for row, chain_symbol in enumerate(chain_symbols):
-            portfolio_cells = {}
+            chain_cells = {}
             for column, d in enumerate(self.headers):
                 cell_type  = d['cell']
                 cell_name = d['name']
@@ -186,16 +271,18 @@ class HedgeMonitor(QtWidgets.QTableWidget):
                 else:
                     self.setCellWidget(row, column, cell)
 
-                portfolio_cells[cell_name] = cell
+                chain_cells[cell_name] = cell
             
-            self.cells[chain_symbol] = portfolio_cells
+            self.cells[chain_symbol] = chain_cells
 
         self.resizeColumnsToContents()
 
         for chain_symbol in self.cells:
-            self.update_balance_price(chain_symbol)
-            self.update_portfolio_attr(chain_symbol, 'net_pos')
-            self.update_portfolio_attr(chain_symbol, 'pos_delta')
+            algo = self.hedge_engine.hedge_algos.get(chain_symbol)
+            self.update_algo_status(algo)
+            self.update_chain_attr(chain_symbol, 'chain_symbol')
+            self.update_chain_attr(chain_symbol, 'net_pos')
+            self.update_chain_attr(chain_symbol, 'pos_delta')
 
     def register_event(self) -> None:
         self.signal_status.connect(self.process_status_event)
@@ -203,23 +290,26 @@ class HedgeMonitor(QtWidgets.QTableWidget):
 
     def process_status_event(self, event: Event) -> None:
         algo = event.data
+        self.update_algo_status(algo)
+        
+    def update_algo_status(self, algo: ChannelHedgeAlgo):
         cells = self.cells[algo.chain_symbol]
 
         cells['status'].setText(algo.status.value)
+        cells['balance_price'].setText(str(algo.balance_price))
+        cells['up_price'].setText(str(algo.up_price))
+        cells['down_price'].setText(str(algo.down_price))
 
-    def update_balance_price(self, chain_symbol: str):
-        price = self.hedge_engine.get_balance_price(chain_symbol)
-        cells = self.cells[chain_symbol]
-        cells['balance_price'].setText(str(price))
-
-    def update_portfolio_attr(self, chain_symbol: str, attr_name: str):
+    def update_chain_attr(self, chain_symbol: str, attr_name: str):
         chain = self.chains.get(chain_symbol)
         cells = self.cells[chain_symbol]
 
         if attr_name in cells:
             value = getattr(chain, attr_name, None)
-            if value:
-                cells['net_pos'].setText(str(value))
+            print(attr_name, value)
+            if value is not None:
+                print(cells[attr_name])
+                cells[attr_name].setText(str(value))
     
     def start_auto_hedge(self, chain_symbol) -> None:
         cells = self.cells[chain_symbol]
@@ -238,10 +328,13 @@ class HedgeManager(QtWidgets.QWidget):
     signal_log = QtCore.pyqtSignal(Event)
 
     def __init__(self, option_engine: OptionEngineExt):
+        super().__init__()
         self.option_engine = option_engine
         self.main_engine = option_engine.main_engine
         self.event_engine = option_engine.event_engine
         self.hedge_engine = option_engine.hedge_engine
+
+        self.hedge_engine.init_engine()
 
         self.init_ui()
         self.register_event()
@@ -303,7 +396,7 @@ class HedgeManager(QtWidgets.QWidget):
     def register_event(self) -> None:
         """"""
         self.signal_log.connect(self.process_log_event)
-        self.event_Engine.register(EVENT_OPTION_ALGO_LOG, self.signal_log.emit)
+        self.event_engine.register(EVENT_OPTION_HEDGE_ALGO_LOG, self.signal_log.emit)
 
     def process_log_event(self, event: Event) -> None:
         """"""
@@ -315,7 +408,7 @@ class HedgeManager(QtWidgets.QWidget):
     def show(self) -> None:
         """"""
         self.hedge_engine.init_engine()
-        self.algo_monitor.resizeColumnsToContents()
+        self.hedge_monitor.resizeColumnsToContents()
         super().showMaximized()
 
     def start_for_all(self) -> None:

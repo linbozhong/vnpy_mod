@@ -15,6 +15,7 @@ from vnpy.trader.object import (
     BaseData,
     OrderData, OrderRequest, OrderType
 )
+from vnpy.trader.utility import load_json, save_json
 from vnpy.trader.engine import BaseEngine, MainEngine
 from vnpy.app.option_master.engine import OptionEngine
 from vnpy.app.option_master.base import (
@@ -26,6 +27,7 @@ APP_NAME = "OptionMasterExt"
 
 EVENT_OPTION_STRATEGY_ORDER = "eOptionStrategyOrder"
 EVENT_OPTION_HEDGE_ALGO_STATUS = "eOptionHedgeAlgoStatus"
+EVENT_OPTION_HEDGE_ALGO_LOG = "eOptionHedgeAlgoLog"
 
 STRATEGY_HEDGE_DELTA_LONG = "hedge_delta_long"
 STRATEGY_HEDGE_DELTA_SHORT = "hedge_delta_short"
@@ -119,15 +121,33 @@ class OptionEngineExt(OptionEngine):
         self.cover = self.strategy_trader.cover
         self.send_strategy_order = self.strategy_trader.send_strategy_order
 
+    def init_engine(self) -> None:
+        self.load_portfolio_settings()
+        self.init_all_portfolios()
+        self.inited = True
+
+    def load_portfolio_settings(self) -> None:
+        portfolio_settings = self.setting['portfolio_settings']
+        for name, settings in portfolio_settings.items():
+            self.update_portfolio_setting(
+                name,
+                settings['model_name'],
+                settings['interest_rate'],
+                settings['chain_underlying_map'],
+                settings['inverse'],
+                settings['precision']
+            )
+
     def init_all_portfolios(self) -> None:
         portfolio_settings = self.setting['portfolio_settings']
         for portfolio_name in portfolio_settings:
             self.init_portfolio(portfolio_name)
         
-        self.inited = True
-
 
 class HedgeEngine:
+
+    data_filename = "channel_hedge_algo_data.json"
+
     def __init__(self, option_engine: OptionEngineExt):
         self.option_engine: OptionEngineExt = option_engine
         self.main_engine: MainEngine = option_engine.main_engine
@@ -144,6 +164,25 @@ class HedgeEngine:
         self.chains: Dict[str, ChainData] = {}
         self.hedge_algos: Dict[str, "ChannelHedgeAlgo"] = {}
         self.counters: Dict[str, float] = {}
+        self.data: Dict[str, Dict] = {}
+
+    def load_data(self) -> None:
+        data = load_json(self.data_filename)
+        for algo in self.hedge_algos.values():
+            algo_data = data.get(algo.chain_symbol)
+            algo.balance_price = algo_data['balance_price']
+            algo.up_price = algo_data['up_price']
+            algo.down_price = algo_data['down_price']
+        self.data = data
+
+    def save_data(self) -> None:
+        for algo in self.hedge_algos.values():
+            d = {}
+            d['balance_price'] = algo.balance_price
+            d['up_price'] = algo.up_price
+            d['down_price'] = algo.down_price
+            self.data[algo.chain_symbol] = d
+        save_json(self.data_filename, self.data)
 
     def init_counter(self) -> None:
         self.counters['check_delta'] = 0
@@ -163,9 +202,10 @@ class HedgeEngine:
             self.init_counter()
             self.init_chains()
             self.init_hedge_algos()
+            # print(self.hedge_algos)
+            self.write_log(f"期权对冲引擎初始化完成")
         else:
             self.write_log(f"期权扩展主引擎尚未完成初始化")
-
 
     def start_all_auto_hedge(self):
         for algo in self.hedge_algos:
