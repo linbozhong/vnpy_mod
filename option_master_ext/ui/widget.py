@@ -5,11 +5,10 @@ from vnpy.trader.engine import MainEngine
 from vnpy.trader.ui import QtWidgets, QtCore, QtGui
 from vnpy.trader.ui.widget import BaseCell, DirectionCell, EnumCell, BaseMonitor
 
-
 from vnpy.app.option_master.base import ChainData
 from vnpy.app.option_master.ui.widget import PortfolioDialog
-from vnpy.app.option_master.ui.monitor import MonitorCell, PosCell
-from vnpy.app.option_master.ui.manager import AlgoSpinBox
+from vnpy.app.option_master.ui.monitor import MonitorCell, PosCell, GreeksCell
+from vnpy.app.option_master.ui.manager import AlgoSpinBox, AlgoDoubleSpinBox
 
 from ..engine_ext import (
     APP_NAME, 
@@ -100,6 +99,16 @@ class HedgePercentSpinBox(AlgoSpinBox):
         self.setMaximum(100)
         self.setMinimum(10)
         self.setSingleStep(10)
+
+    def get_value(self) -> float:
+        return self.value() / 100
+
+class OffsetPercentSpinBox(AlgoDoubleSpinBox):
+    def __init__(self):
+        super().__init__()
+        self.setMaximum(10)
+        self.setMinimum(0.2)
+        self.setSingleStep(0.2)
 
     def get_value(self) -> float:
         return self.value() / 100
@@ -195,15 +204,15 @@ class OptionManagerExt(QtWidgets.QWidget):
 
 class StrategyOrderMonitor(BaseMonitor):
     event_type = EVENT_OPTION_STRATEGY_ORDER
-    data_key = "strategy_order_id"
+    data_key = "strategy_id"
     sorting = True
 
     headers = {
-        "strategy_order_id": {"display": "策略ID", "cell": BaseCell, "update": False},
+        "strategy_id": {"display": "策略ID", "cell": BaseCell, "update": False},
         "chain_symbol": {"display": "期权链", "cell": BaseCell, "update": False},
         "time": {"display": "时间", "cell": BaseCell, "update": False},
-        "strategy_name": {"display": "策略名", "cell": BaseCell, "update": False},
-        "direction": {"display": "方向", "cell": BaseCell, "update": False},
+        "strategy_name": {"display": "策略名", "cell": EnumCell, "update": False},
+        "direction": {"display": "方向", "cell": DirectionCell, "update": False},
         "status": {"display": "状态", "cell": EnumCell, "update": True},
     }
 
@@ -217,16 +226,16 @@ class HedgeMonitor(QtWidgets.QTableWidget):
 
     headers: List[Dict] = [
         {"name": "chain_symbol", "display": "期权链", "cell": MonitorCell},
-        {"name": "status", "display": "状态", "cell": MonitorCell},
         {"name": "balance_price", "display": "中性基准价", "cell": MonitorCell},
         {"name": "up_price", "display": "上阈值", "cell": MonitorCell},
         {"name": "down_price", "display": "下阈值", "cell": MonitorCell},
-        {"name": "pos_delta", "display": "Delta偏移量", "cell": MonitorCell},
+        {"name": "pos_delta", "display": "Delta", "cell": GreeksCell},
         {"name": "net_pos", "display": "组合净仓", "cell": PosCell},
-        {"name": "offset_percent", "display": "偏移比例", "cell": HedgePercentSpinBox},
+        {"name": "offset_percent", "display": "偏移比例", "cell": OffsetPercentSpinBox},
         {"name": "hedge_percent", "display": "对冲比例", "cell": HedgePercentSpinBox},
-        {"name": "auto_hedge", "display": "开始监测", "cell": HedgeAutoButton},
-        {"name": "action_hedge", "display": "立即对冲", "cell": HedgeActionButton},
+        {"name": "status", "display": "状态", "cell": MonitorCell},
+        {"name": "auto_hedge", "display": "监测开关", "cell": HedgeAutoButton},
+        {"name": "action_hedge", "display": "对冲", "cell": HedgeActionButton},
     ]
 
     def __init__(self, option_engine: OptionEngineExt):
@@ -243,7 +252,6 @@ class HedgeMonitor(QtWidgets.QTableWidget):
         self.register_event()
 
     def init_ui(self) -> None:
-        print(self.chains)
         self.setWindowTitle("通道对冲")
         self.verticalHeader().setVisible(False)
         self.setEditTriggers(self.NoEditTriggers)
@@ -300,6 +308,10 @@ class HedgeMonitor(QtWidgets.QTableWidget):
         cells['up_price'].setText(str(algo.up_price))
         cells['down_price'].setText(str(algo.down_price))
 
+        print('update algo status:', algo.chain.net_pos, algo.chain.pos_delta)
+        cells['net_pos'].setText(str(algo.chain.net_pos))
+        cells['pos_delta'].setText(str(algo.chain.pos_delta))
+
     def update_chain_attr(self, chain_symbol: str, attr_name: str):
         chain = self.chains.get(chain_symbol)
         cells = self.cells[chain_symbol]
@@ -314,13 +326,13 @@ class HedgeMonitor(QtWidgets.QTableWidget):
     def start_auto_hedge(self, chain_symbol) -> None:
         cells = self.cells[chain_symbol]
         params = {}
-        for name in ['chain_symobl', 'offset_percent', 'hedge_percent']:
+        for name in ['offset_percent', 'hedge_percent']:
             params[name] = cells[name].get_value()
 
-        self.hedge_engine.start_auto_hedge(chain_symbol, params)
+        self.hedge_engine.start_hedge_algo(chain_symbol, params)
 
     def stop_auto_hedge(self, chain_symbol) -> None:
-        self.hedge_engine.stop_auto_hedge(chain_symbol)
+        self.hedge_engine.stop_hedge_algo(chain_symbol)
 
 
 class HedgeManager(QtWidgets.QWidget):
@@ -341,21 +353,22 @@ class HedgeManager(QtWidgets.QWidget):
 
     def init_ui(self) -> None:
         self.setWindowTitle("Delta对冲")
+        self.setMaximumSize(1440, 800)
 
         self.hedge_monitor = HedgeMonitor(self.option_engine)
         self.strategy_order_monitor = StrategyOrderMonitor(self.main_engine, self.event_engine)
 
         self.log_monitor = QtWidgets.QTextEdit()
         self.log_monitor.setReadOnly(True)
-        self.log_monitor.setMaximumWidth(400)
+        self.log_monitor.setMaximumWidth(300)
 
-        start_hedge_button = QtWidgets.QPushButton("启动自动对冲")
+        start_hedge_button = QtWidgets.QPushButton("全部启动")
         start_hedge_button.clicked.connect(self.start_for_all)
 
-        stop_hedge_button = QtWidgets.QPushButton("停止自动对冲")
+        stop_hedge_button = QtWidgets.QPushButton("全部停止")
         stop_hedge_button.clicked.connect(self.stop_for_all)
 
-        self.offset_percent = HedgePercentSpinBox()
+        self.offset_percent = OffsetPercentSpinBox()
         self.hedge_percent = HedgePercentSpinBox()
 
         offset_percent_btn = QtWidgets.QPushButton("设置")
