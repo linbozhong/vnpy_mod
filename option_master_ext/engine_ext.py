@@ -1,3 +1,4 @@
+import traceback
 import typing
 from typing import Optional, Dict, List, Set, Callable, Tuple
 from copy import copy
@@ -167,21 +168,37 @@ class HedgeEngine:
         self.hedge_algos: Dict[str, "ChannelHedgeAlgo"] = {}
         self.counters: Dict[str, float] = {}
         self.data: Dict[str, Dict] = {}
+        self.settings: Dict[str, Dict] = {}
 
     def load_setting(self) -> None:
-        pass
+        settings = load_json(self.setting_filename)
+        for algo in self.hedge_algos.values():
+            algo_setting = settings.get(algo.chain_symbol)
+            if algo_setting:
+                algo_setting.offset_percent = algo_setting['offset_percent']
+                algo_setting.hedge_percent = algo_setting['hedge_percent']
+        self.settings = settings
+        self.write_log(f"期权对冲引擎配置载入成功")
 
     def save_setting(self) -> None:
-        pass
+        for algo in self.hedge_algos.values():
+            d = {}
+            d['offset_percent'] = algo.offset_percent
+            d['hedge_percent'] = algo.hedge_percent
+            self.settings[algo.chain_symbol] = d
+        save_json(self.setting_filename, self.settings)
+        self.write_log(f"期权对冲引擎配置载入成功")
 
     def load_data(self) -> None:
         data = load_json(self.data_filename)
         for algo in self.hedge_algos.values():
             algo_data = data.get(algo.chain_symbol)
-            algo.balance_price = algo_data['balance_price']
-            algo.up_price = algo_data['up_price']
-            algo.down_price = algo_data['down_price']
+            if algo_data:
+                algo.balance_price = algo_data['balance_price']
+                algo.up_price = algo_data['up_price']
+                algo.down_price = algo_data['down_price']
         self.data = data
+        self.write_log(f"期权对冲引擎数据载入成功")
 
     def save_data(self) -> None:
         for algo in self.hedge_algos.values():
@@ -191,6 +208,8 @@ class HedgeEngine:
             d['down_price'] = algo.down_price
             self.data[algo.chain_symbol] = d
         save_json(self.data_filename, self.data)
+        self.write_log(f"期权对冲引擎数据保存成功")
+
 
     def init_counter(self) -> None:
         self.counters['check_delta'] = 0
@@ -206,6 +225,9 @@ class HedgeEngine:
             self.hedge_algos[chain_symbol] = algo
 
     def init_engine(self) -> None:
+        self.load_setting()
+        self.load_data()
+
         if self.option_engine.inited:
             self.init_counter()
             self.init_chains()
@@ -257,16 +279,20 @@ class HedgeEngine:
         # check_delta_counter = self.counters.get('check_delta')
         # calc_balance_counter = self.counters.get('calculate_balance')
 
-        if self.counters['check_delta'] > self.check_delta_trigger:
-            self.auto_hedge()
-            self.counters['check_delta'] = 0
+        try:
+            if self.counters['check_delta'] > self.check_delta_trigger:
+                self.auto_hedge()
+                self.counters['check_delta'] = 0
 
-        if self.counters['calculate_balance'] > self.calc_balance_trigger:
-            self.calc_all_balance()
-            self.counters['calculate_balance'] = 0
+            if self.counters['calculate_balance'] > self.calc_balance_trigger:
+                self.calc_all_balance()
+                self.counters['calculate_balance'] = 0
 
-        self.counters['check_delta'] += 1
-        self.counters['calculate_balance'] += 1
+            self.counters['check_delta'] += 1
+            self.counters['calculate_balance'] += 1
+        except:
+            msg = f"处理委托事件，触发异常：\n{traceback.format_exc()}"
+            self.write_log(msg)
 
     def auto_hedge(self) -> None:
         for algo in self.hedge_algos.values():
@@ -462,6 +488,9 @@ class ChannelHedgeAlgo:
         self.strategy_orders[strategy_order.strategy_id] = strategy_order
         self.active_strategyids.add(strategy_order.strategy_id)
         self.put_hedge_algo_status_event(self)
+
+    def is_hedge_inited(self) -> bool:
+        pass
 
     def check_hedge_signal(self) -> None:
         if not self.is_active():

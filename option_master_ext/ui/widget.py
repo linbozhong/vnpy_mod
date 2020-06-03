@@ -92,6 +92,16 @@ class HedgeActionButton(QtWidgets.QPushButton):
         self.chain_symbol = chain_symbol
         self.monitor = monitor
 
+        self.setText("执行")
+        self.clicked.connect(self.on_clicked)
+
+    def on_clicked(self) -> None:
+        algo = self.monitor.hedge_engine.hedge_algos.get(self.chain_symbol)
+        if algo:
+            if algo.is_hedging():
+                return
+            else:
+                pass
 
 class HedgePercentSpinBox(AlgoSpinBox):
     def __init__(self):
@@ -304,13 +314,14 @@ class HedgeMonitor(QtWidgets.QTableWidget):
         cells = self.cells[algo.chain_symbol]
 
         cells['status'].setText(algo.status.value)
-        cells['balance_price'].setText(str(algo.balance_price))
-        cells['up_price'].setText(str(algo.up_price))
-        cells['down_price'].setText(str(algo.down_price))
+        cells['balance_price'].setText(f'{algo.balance_price:0.3f}')
+        cells['up_price'].setText(f'{algo.up_price:0.3f}')
+        cells['down_price'].setText(f'{algo.down_price:0.3f}')
 
         print('update algo status:', algo.chain.net_pos, algo.chain.pos_delta)
         cells['net_pos'].setText(str(algo.chain.net_pos))
-        cells['pos_delta'].setText(str(algo.chain.pos_delta))
+        cells['pos_delta'].setText(f'{algo.down_price:0.0f}')
+        cells['auto_hedge'].update_status(algo.is_active())
 
     def update_chain_attr(self, chain_symbol: str, attr_name: str):
         chain = self.chains.get(chain_symbol)
@@ -333,6 +344,10 @@ class HedgeMonitor(QtWidgets.QTableWidget):
 
     def stop_auto_hedge(self, chain_symbol) -> None:
         self.hedge_engine.stop_hedge_algo(chain_symbol)
+
+    def close(self) -> None:
+        
+        self.hedge_engine.save_data()
 
 
 class HedgeManager(QtWidgets.QWidget):
