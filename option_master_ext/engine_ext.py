@@ -144,7 +144,21 @@ class OptionEngineExt(OptionEngine):
         portfolio_settings = self.setting['portfolio_settings']
         for portfolio_name in portfolio_settings:
             self.init_portfolio(portfolio_name)
-        
+
+    def process_trade_event(self, event: Event) -> None:
+        trade = event.data
+        super().process_order_event(trade)
+
+        instrument = self.instruments.get(trade.vt_symbol, None)
+        if not instrument:
+            return
+
+        if isinstance(instrument, OptionData):
+            chain_symbol = instrument.chain.chain_symbol
+            algo = self.hedge_engine.hedge_algos.get(chain_symbol)
+            if algo:
+                algo.calculate_balance_price()
+
 
 class HedgeEngine:
 
@@ -175,8 +189,9 @@ class HedgeEngine:
         for algo in self.hedge_algos.values():
             algo_setting = settings.get(algo.chain_symbol)
             if algo_setting:
-                algo_setting.offset_percent = algo_setting['offset_percent']
-                algo_setting.hedge_percent = algo_setting['hedge_percent']
+                algo.offset_percent = algo_setting['offset_percent']
+                algo.hedge_percent = algo_setting['hedge_percent']
+                self.put_hedge_algo_status_event(algo)
         self.settings = settings
         self.write_log(f"期权对冲引擎配置载入成功")
 
@@ -197,6 +212,7 @@ class HedgeEngine:
                 algo.balance_price = algo_data['balance_price']
                 algo.up_price = algo_data['up_price']
                 algo.down_price = algo_data['down_price']
+                self.put_hedge_algo_status_event(algo)
         self.data = data
         self.write_log(f"期权对冲引擎数据载入成功")
 
@@ -225,25 +241,23 @@ class HedgeEngine:
             self.hedge_algos[chain_symbol] = algo
 
     def init_engine(self) -> None:
-        self.load_setting()
-        self.load_data()
+
 
         if self.option_engine.inited:
             self.init_counter()
             self.init_chains()
             self.init_hedge_algos()
-            self.register_event()            
-            # print(self.hedge_algos)
+            self.register_event()
+
+            self.load_setting()
+            self.load_data()            
             self.write_log(f"期权对冲引擎初始化完成")
         else:
             self.write_log(f"期权扩展主引擎尚未完成初始化")
 
-    def start_all_auto_hedge(self) -> None:
-        for algo in self.hedge_algos:
-            algo.start_auto_hedge()
 
     def stop_all_auto_hedge(self) -> None:
-        for algo in self.hedge_algos:
+        for algo in self.hedge_algos.values():
             algo.stop_auto_hedge()
 
     def start_hedge_algo(self, chain_symbol: str, parameters: Dict) -> None:
@@ -275,10 +289,6 @@ class HedgeEngine:
             algo.calculate_balance_price()
 
     def process_timer_event(self, event: Event) -> None:
-        # print('hedge timer event')
-        # check_delta_counter = self.counters.get('check_delta')
-        # calc_balance_counter = self.counters.get('calculate_balance')
-
         try:
             if self.counters['check_delta'] > self.check_delta_trigger:
                 self.auto_hedge()
@@ -339,9 +349,6 @@ class ChannelHedgeAlgo:
         self.up_price: float = 0.0
         self.down_price: float = 0.0
 
-        # self.net_pos: int = self.chain.net_pos
-        # self.pos_delta: float = self.chain.pos_delta
-
         self.long_hedge_count: int = 0
         self.short_hedge_count: int = 0
         self.hedge_ref: int = 0
@@ -378,6 +385,10 @@ class ChannelHedgeAlgo:
         chain_delta = 0
         for option in self.chain.options.values():
             if option.net_pos:
+                if not option.mid_impv:
+                    print(f'{option.vt_symbol} mid-impv is not')
+                    return
+
                 _price, delta, _gamma, _theta, _vega = option.calculate_greeks(
                     price,
                     option.strike_price,
@@ -405,6 +416,9 @@ class ChannelHedgeAlgo:
 
         while True:
             try_delta = self.calculate_pos_delta(try_price)
+            if not try_delta:
+                return
+
             if try_delta > 0:
                 left_end = try_price
                 # if right boudary is uncentain
@@ -437,6 +451,9 @@ class ChannelHedgeAlgo:
 
     def start_auto_hedge(self, params: Dict) -> None:
         if self.is_active():
+            return
+
+        if not self.chain.net_pos:
             return
 
         for param_name in self.parameters:
@@ -490,21 +507,24 @@ class ChannelHedgeAlgo:
         self.put_hedge_algo_status_event(self)
 
     def is_hedge_inited(self) -> bool:
-        pass
-
-    def check_hedge_signal(self) -> None:
         if not self.is_active():
-            return
+            return False
 
         if self.is_hedging():
-            return
+            return False
 
-        if not self.up_price or not self.down_price:
+        if not self.balance_price or not self.up_price or not self.down_price:
             print('up and down is not ready')
-            return
+            return False
 
         if not self.chain.atm_index:
             print('atm index is not ready')
+            return False
+
+        return True
+
+    def check_hedge_signal(self) -> None:
+        if not self.is_hedge_inited():
             return
         
         tick = self.underlying.tick
