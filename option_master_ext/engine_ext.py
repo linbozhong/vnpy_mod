@@ -61,11 +61,6 @@ class StrategyOrderStatus(Enum):
 
 class OptionStrategyOrder:
 
-    status: StrategyOrderStatus = StrategyOrderStatus.SUBMITTING
-    reqs: List[OrderRequest] = []
-    active_orderids: Set[str] = set()
-    time: str = ""
-
     def __init__(
         self,
         chain_symbol: str,
@@ -80,12 +75,14 @@ class OptionStrategyOrder:
         self.strategy_ref = strategy_ref
         self.send_at_break = send_at_break
 
-        self.strategy_id = f"{self.strategy_name.value}.{self.direction.value}.{self.strategy_ref}"
+        self.strategy_id = f"{self.chain_symbol}.{self.strategy_name.value}.{self.direction.value}.{self.strategy_ref}"
         self.time = datetime.now().strftime("%H:%M:%S")
 
         self.status: StrategyOrderStatus = StrategyOrderStatus.SUBMITTING
         self.reqs: List[OrderRequest] = []
         self.active_orderids: Set[str] = set()
+
+        self.cancel_count: int = 0
 
     def is_finished(self) -> bool:
         return self.status == StrategyOrderStatus.FINISHED
@@ -146,14 +143,20 @@ class OptionEngineExt(OptionEngine):
             self.init_portfolio(portfolio_name)
 
     def process_trade_event(self, event: Event) -> None:
+        super().process_trade_event(event)
+
         trade = event.data
-        super().process_order_event(trade)
+        # print('ext trade event')
+        if not self.hedge_engine.inited:
+            # print('hedge engine is un ready')
+            return
 
         instrument = self.instruments.get(trade.vt_symbol, None)
         if not instrument:
             return
 
         if isinstance(instrument, OptionData):
+            # print('is option data:', instrument)
             chain_symbol = instrument.chain.chain_symbol
             algo = self.hedge_engine.hedge_algos.get(chain_symbol)
             if algo:
@@ -173,11 +176,13 @@ class HedgeEngine:
 
         # parameters
         self.check_delta_trigger: int = 5
-        self.calc_balance_trigger: int = 10
+        self.calc_balance_trigger: int = 300
         self.offset_percent: float = 0.0
         self.hedge_percent: float = 0.0
 
         # variables
+        self.inited = False
+
         self.chains: Dict[str, ChainData] = {}
         self.hedge_algos: Dict[str, "ChannelHedgeAlgo"] = {}
         self.counters: Dict[str, float] = {}
@@ -241,8 +246,6 @@ class HedgeEngine:
             self.hedge_algos[chain_symbol] = algo
 
     def init_engine(self) -> None:
-
-
         if self.option_engine.inited:
             self.init_counter()
             self.init_chains()
@@ -250,7 +253,9 @@ class HedgeEngine:
             self.register_event()
 
             self.load_setting()
-            self.load_data()            
+            self.load_data()
+
+            self.inited = True     
             self.write_log(f"期权对冲引擎初始化完成")
         else:
             self.write_log(f"期权扩展主引擎尚未完成初始化")
@@ -306,6 +311,7 @@ class HedgeEngine:
 
     def auto_hedge(self) -> None:
         for algo in self.hedge_algos.values():
+            self.put_hedge_algo_status_event(algo)
             algo.check_hedge_signal()
 
     def calc_all_balance(self) -> None:
@@ -412,7 +418,6 @@ class ChannelHedgeAlgo:
         right_end = 0
         pricetick = self.underlying.pricetick
         try_price = self.underlying.mid_price
-        print('underlying price tick', try_price)
 
         while True:
             try_delta = self.calculate_pos_delta(try_price)
@@ -508,9 +513,11 @@ class ChannelHedgeAlgo:
 
     def is_hedge_inited(self) -> bool:
         if not self.is_active():
+            # print('algo is stop')
             return False
 
         if self.is_hedging():
+            print('algo is hedgeing')
             return False
 
         if not self.balance_price or not self.up_price or not self.down_price:
@@ -528,13 +535,22 @@ class ChannelHedgeAlgo:
             return
         
         tick = self.underlying.tick
-        print('check_hedge_signal', tick.last_price, self.up_price)
+        # print('check_hedge_signal', tick.last_price, self.up_price)
         if tick.last_price > self.up_price:
             self.action_hedge(Direction.LONG)
         elif tick.last_price < self.down_price:
             self.action_hedge(Direction.SHORT)
         else:
             return
+
+    def manual_hedge(self) -> None:
+        if not self.is_hedge_inited():
+            return
+
+        if self.chain.pos_delta > 0:
+            self.action_hedge(Direction.SHORT)
+        else:
+            self.action_hedge(Direction.LONG)
 
     def put_hedge_algo_status_event(self, algo: "ChannelHedgeAlgo") -> None:
         self.hedge_engine.put_hedge_algo_status_event(algo)
@@ -546,9 +562,10 @@ class StrategyTrader:
         self.main_engine: MainEngine = option_engine.main_engine
         self.event_engine: EventEngine = option_engine.event_engine
 
-        self.pay_up: int = 0
+        self.pay_up: int = -5
         self.cancel_interval: int = 3
         self.max_volume: int = 30
+        self.max_resend: int = 3
 
         self.orderid_to_strategyid: Dict[str, str] = {}
         self.active_orderids: Set[str] = set()
@@ -607,13 +624,14 @@ class StrategyTrader:
             if not strategy_order.is_active():
                 continue
 
-            active_orders = strategy_order.active_orderids()
-            if not active_orders:
+            active_orders = strategy_order.active_orderids
+            if not active_orders and not strategy_order.reqs:
                 strategy_order.status = StrategyOrderStatus.FINISHED
                 self.put_stategy_order_event(strategy_order)
             else:
                 for vt_orderid in active_orders:
                     if self.cancel_counts[vt_orderid] > self.cancel_interval:
+                        print('cancel order:', vt_orderid, self.cancel_counts[vt_orderid])
                         order = self.main_engine.get_order(vt_orderid)
                         if not self.is_contract_break(order.vt_symbol):
                             self.cancel_counts[vt_orderid] = 0
@@ -632,6 +650,7 @@ class StrategyTrader:
 
             reqs = strategy_order.reqs
             while reqs:
+                print('every req sending..')
                 req = reqs.pop()
 
                 contract = self.main_engine.get_contract(req.vt_symbol)
@@ -648,7 +667,8 @@ class StrategyTrader:
                     self.cancel_counts[vt_orderid] = 0
 
             if not strategy_order.is_active():
-                strategy_order.status == StrategyOrderStatus.SENDED
+                strategy_order.status = StrategyOrderStatus.SENDED
+
                 self.put_stategy_order_event(strategy_order)
 
     def get_default_order_price(self, vt_symbol: str, direction: Direction) -> float:
@@ -707,6 +727,7 @@ class StrategyTrader:
             symbol=contract.symbol,
             exchange=contract.exchange,
             direction=direction,
+            offset=offset,
             type=OrderType.LIMIT,
             volume=volume,
             price=price 

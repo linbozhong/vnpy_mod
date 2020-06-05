@@ -55,7 +55,7 @@ class HedgeActionButton(QtWidgets.QPushButton):
             if algo.is_hedging():
                 return
             else:
-                pass
+                algo.manual_hedge()
 
 
 class HedgePercentSpinBox(AlgoSpinBox):
