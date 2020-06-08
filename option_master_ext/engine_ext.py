@@ -102,6 +102,8 @@ class OptionEngineExt(OptionEngine):
         self.inited: bool = False
 
         self.strategy_trader: "StrategyTrader" = StrategyTrader(self)
+        self.margin_calculator: "MarginCaculator" = MarginCaculator(self)
+
         self.hedge_engine: "HedgeEngine" = HedgeEngine(self)
 
         # order funcitons
@@ -163,13 +165,34 @@ class OptionEngineExt(OptionEngine):
                 algo.calculate_balance_price()
 
 
+class VolatilityTrader():
+
+    def __init__(self, option_engine: OptionEngineExt):
+        self.option_engine = option_engine
+        self.margin_calc: "MarginCaculator" = option_engine.margin_calculator
+
+        self.capital: float = 0.0
+
+    def set_capital(self):
+        pass
+
+    def calculate_volume(self, money: float, call: OptionData, put: OptionData):
+        ratio = call.cash_delta / put.cash_delta
+        call_margin = self.margin_calc.get_margin(call.vt_symbol)
+        put_margin = self.margin_calc.get_margin(put.vt_symbol)
+        call_volume = round(money / (call_margin + put_margin * ratio))
+        put_volume = round(call_volume * ratio)
+        return call_volume, put_volume
+
+
 class HedgeEngine:
 
     setting_filename = "channel_hedge_algo_setting.json"
     data_filename = "channel_hedge_algo_data.json"
 
     def __init__(self, option_engine: OptionEngineExt):
-        self.option_engine: OptionEngineExt = option_engine
+        self.option_engine = option_engine
+
         self.main_engine: MainEngine = option_engine.main_engine
         self.event_engine: EventEngine = option_engine.event_engine
         self.strategy_trader: "StrategyTrader" = option_engine.strategy_trader
@@ -571,6 +594,9 @@ class StrategyTrader:
         self.active_orderids: Set[str] = set()
         self.strategy_orders: Dict[str, OptionStrategyOrder] = {}
         self.cancel_counts: Dict[str, int] = {}
+        
+        self.child_orders: Dict[str, Set[str]] = {}
+        self.orderid_to_parentid: Dict[str, str] = {}
 
         self.register_event()
 
@@ -601,18 +627,32 @@ class StrategyTrader:
         self.send_order()
 
     def resend_order(self, order: OrderData) -> None:
-        new_volume = order.volume - order.traded
-        if new_volume:
-            strategy_id = self.orderid_to_strategyid[order.vt_orderid]
-            strategy_order = self.strategy_orders[strategy_id]
+        parent_id = self.orderid_to_parentid.get(order.vt_orderid)
+        child_count = len(self.child_orders[parent_id])
+        if child_count > self.max_resend:
+            return
 
-            new_req = self.generate_order_req(
-                vt_symbol=order.vt_symbol,
-                direction=order.direction,
-                offset=order.offset,
-                volume=new_volume,
-            )
-            strategy_order.add_req(new_req)
+        new_volume = order.volume - order.traded
+        new_req = self.generate_order_req(
+            vt_symbol=order.vt_symbol,
+            direction=order.direction,
+            offset=order.offset,
+            volume=new_volume,
+        )
+        new_req.price = self.get_default_order_price(new_req.vt_symbol, new_req.direction)
+
+        vt_orderid = self.main_engine.send_order(new_req, order.gateway_name)
+
+        strategy_id = self.orderid_to_strategyid[order.vt_orderid]
+        strategy_order = self.strategy_orders[strategy_id]
+        strategy_order.active_orderids.add(vt_orderid)
+
+        self.active_orderids.add(vt_orderid)
+        self.orderid_to_strategyid[vt_orderid] = strategy_id
+        self.cancel_counts[vt_orderid] = 0
+        
+        self.child_orders[parent_id].add(vt_orderid)
+        self.orderid_to_parentid[vt_orderid] = parent_id
 
     def cancel_order(self, vt_orderid: str) -> None:
         order = self.main_engine.get_order(vt_orderid)
@@ -660,11 +700,16 @@ class StrategyTrader:
                 split_req_list = self.split_req(req)
                 for split_req in split_req_list:
                     vt_orderid = self.main_engine.send_order(split_req, contract.gateway_name)
-                    strategy_order.active_orderids.add(vt_orderid)
 
+                    strategy_order.active_orderids.add(vt_orderid)
                     self.active_orderids.add(vt_orderid)
                     self.orderid_to_strategyid[vt_orderid] = strategy_id
                     self.cancel_counts[vt_orderid] = 0
+
+                    child_set = set()
+                    child_set.add(vt_orderid)
+                    self.child_orders[vt_orderid] = child_set
+                    self.orderid_to_parentid[vt_orderid] = vt_orderid
 
             if not strategy_order.is_active():
                 strategy_order.status = StrategyOrderStatus.SENDED
@@ -749,3 +794,36 @@ class StrategyTrader:
     def put_stategy_order_event(self, strategy_order: OptionStrategyOrder) -> None:
         event = Event(EVENT_OPTION_STRATEGY_ORDER, strategy_order)
         self.event_engine.put(event)
+
+
+class MarginCaculator:
+
+    def __init__(self, option_engine: OptionEngineExt):
+        self.option_engine = option_engine
+
+        self.margins: Dict[str, float] = {}
+
+    def get_margin(self, vt_symbol: str):
+        margin = self.margins.get(vt_symbol)
+        if not margin:
+            option = self.option_engine.instruments.get(vt_symbol)
+            margin = self.calculate_etf_margin(option)
+            self.margins[vt_symbol] = margin
+            return margin
+
+    def calculate_etf_margin(self, option: OptionData):
+        option_pre_close = option.tick.pre_close
+        underlying_pre_close = option.underlying.tick.pre_close
+
+        size = option.size
+        opc = option_pre_close
+        upc = underlying_pre_close
+
+        if option.option_type == 1:
+            otm = max(option.strike_price - underlying_pre_close, 0)
+            margin = (opc + max(upc * 0.12 - otm, upc * 0.07)) * size
+        else:
+            otm = max(underlying_pre_close - option.strike_price, 0)
+            margin = min(opc + max(upc * 0.12 - otm, upc * 0.07), option.strike_price) * size
+        
+        return margin
