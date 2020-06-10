@@ -57,6 +57,7 @@ class StrategyOrderStatus(Enum):
     SUBMITTING = "提交中"
     SENDED = "已发送"
     FINISHED = "已完成"
+    CANCELLED = "已撤销"
 
 
 class OptionStrategyOrder:
@@ -106,6 +107,9 @@ class OptionEngineExt(OptionEngine):
 
         self.hedge_engine: "HedgeEngine" = HedgeEngine(self)
 
+        # containers
+        self.chains: Dict[str, ChainData] = {}
+
         # order funcitons
         self.buy: Optional[Callable] = None
         self.sell: Optional[Callable] = None
@@ -125,6 +129,7 @@ class OptionEngineExt(OptionEngine):
     def init_engine(self) -> None:
         self.load_portfolio_settings()
         self.init_all_portfolios()
+        self.init_chains()
         self.inited = True
 
     def load_portfolio_settings(self) -> None:
@@ -143,6 +148,10 @@ class OptionEngineExt(OptionEngine):
         portfolio_settings = self.setting['portfolio_settings']
         for portfolio_name in portfolio_settings:
             self.init_portfolio(portfolio_name)
+
+    def init_chains(self) -> None:
+        for portfolio in self.active_portfolios.values():
+            self.chains.update(portfolio.chains)
 
     def process_trade_event(self, event: Event) -> None:
         super().process_trade_event(event)
@@ -165,7 +174,7 @@ class OptionEngineExt(OptionEngine):
                 algo.calculate_balance_price()
 
 
-class VolatilityTrader():
+class StrategyTrading():
 
     def __init__(self, option_engine: OptionEngineExt):
         self.option_engine = option_engine
@@ -173,8 +182,8 @@ class VolatilityTrader():
 
         self.capital: float = 0.0
 
-    def set_capital(self):
-        pass
+    def set_capital(self, capital: float):
+        self.capital = capital
 
     def calculate_volume(self, money: float, call: OptionData, put: OptionData):
         ratio = call.cash_delta / put.cash_delta
@@ -183,6 +192,43 @@ class VolatilityTrader():
         call_volume = round(money / (call_margin + put_margin * ratio))
         put_volume = round(call_volume * ratio)
         return call_volume, put_volume
+
+    def get_etf_m_atm(self, chain_symbol: str, exclude_a: bool = True):
+        chain = self.option_engine.chains.get(chain_symbol)
+        if not chain.atm_index:
+            return
+
+        if not exclude_a:
+            return chain.atm_index
+        else:
+            underlying_price = chain.underlying.mid_price
+
+            atm_distance = 0
+            atm_index = ""
+
+            for call in chain.calls.values():
+                if 'A' in call.chain_index:
+                    continue
+
+                price_distance = abs(underlying_price - call.strike_price)
+
+                if not atm_distance or price_distance < atm_distance:
+                    atm_distance = price_distance
+                    atm_index = call.chain_index
+
+            return atm_index
+
+    def get_straddle_legs(self, chain_symbol: str):
+        pass
+
+    def get_strangle_legs(self, chain_symbol:str, call_level: int, put_level: int):
+        pass
+
+    def get_bull_call_spread(self, chain_symbol:str, buy_level: int, short_level: int):
+        pass
+
+    def get_bull_put_spread(self, chain_symbol:str, short_level: int, buy_level: int):
+        pass
 
 
 class HedgeEngine:
@@ -627,9 +673,14 @@ class StrategyTrader:
         self.send_order()
 
     def resend_order(self, order: OrderData) -> None:
+        strategy_id = self.orderid_to_strategyid[order.vt_orderid]
+        strategy_order = self.strategy_orders[strategy_id]
+
         parent_id = self.orderid_to_parentid.get(order.vt_orderid)
         child_count = len(self.child_orders[parent_id])
         if child_count > self.max_resend:
+            strategy_order.status == StrategyOrderStatus.CANCELLED
+            self.put_stategy_order_event(strategy_order)
             return
 
         new_volume = order.volume - order.traded
@@ -640,13 +691,9 @@ class StrategyTrader:
             volume=new_volume,
         )
         new_req.price = self.get_default_order_price(new_req.vt_symbol, new_req.direction)
-
         vt_orderid = self.main_engine.send_order(new_req, order.gateway_name)
 
-        strategy_id = self.orderid_to_strategyid[order.vt_orderid]
-        strategy_order = self.strategy_orders[strategy_id]
         strategy_order.active_orderids.add(vt_orderid)
-
         self.active_orderids.add(vt_orderid)
         self.orderid_to_strategyid[vt_orderid] = strategy_id
         self.cancel_counts[vt_orderid] = 0
