@@ -1,6 +1,6 @@
 import traceback
 import typing
-from typing import Optional, Dict, List, Set, Callable, Tuple
+from typing import Optional, Dict, List, Set, Callable, Tuple, Any
 from copy import copy
 from enum import Enum
 from datetime import datetime
@@ -180,6 +180,8 @@ class StrategyTrading():
         self.option_engine = option_engine
         self.margin_calc: "MarginCaculator" = option_engine.margin_calculator
 
+        self.etf_m_indices: Dict[str, list] = {}
+
         self.capital: float = 0.0
 
     def set_capital(self, capital: float):
@@ -196,6 +198,7 @@ class StrategyTrading():
     def get_etf_m_atm(self, chain_symbol: str, exclude_a: bool = True):
         chain = self.option_engine.chains.get(chain_symbol)
         if not chain.atm_index:
+            pass
             return
 
         if not exclude_a:
@@ -218,16 +221,115 @@ class StrategyTrading():
 
             return atm_index
 
-    def get_straddle_legs(self, chain_symbol: str):
+    def get_etf_m_indices(self, chain_symbol: str) -> List[str]:
+        indices = self.etf_m_indices.get(chain_symbol)
+        if indices is None:
+            chain = self.option_engine.chains.get(chain_symbol)
+            indices = [index for index in chain.indexes if 'A' not in index]
+            self.etf_m_indices[chain_symbol] = indices
+        return indices
+
+    def get_levels(self, chain_symbol: str) -> Tuple[List[int]]:
+        indices = self.get_etf_m_indices(chain_symbol)
+        atm_index = self.get_etf_m_atm(chain_symbol)
+        
+        atm_idx = indices.index(atm_index)
+        indices_ids = list(range(len(indices)))
+
+        call_levels = [i - atm_idx for i in indices_ids]
+        put_levels = [-(i - atm_idx) for i in indices_ids]
+        return call_levels, put_levels
+
+    def is_in_levels(self, chain_symbol: str, call_level: int, put_level: int) -> bool:
+        call_levels, put_levels = self.get_levels(chain_symbol)
+        return call_level in call_levels and put_level in put_levels
+
+    def is_in_call_levels(self, chain_symbol: str, call_level: int) -> bool:
+        call_levels, _put_levels = self.get_levels(chain_symbol)
+        return call_level in call_levels
+
+    def is_in_put_levels(self, chain_symbol: str, put_level: int) -> bool:
+        _call_levels, put_levels = self.get_levels(chain_symbol)
+        return put_level in put_levels
+
+    def get_straddle_legs(self, chain_symbol: str) -> Tuple[OptionData]:
+        chain, _indices, atm_index = self.get_legs_basic(chain_symbol)
+
+        atm_call = chain.calls[atm_index]
+        atm_put = chain.puts[atm_index]
+        return atm_call, atm_put
+
+    def get_legs_basic(self, chain_symbol: str) -> Tuple[Any]:
+        chain = self.option_engine.chains.get(chain_symbol)
+        indices = self.get_etf_m_indices(chain_symbol)
+        atm_index = self.get_etf_m_atm(chain_symbol)
+        return chain, indices, atm_index
+
+    def get_strangle_legs(self, chain_symbol:str, call_level: int, put_level: int) -> Tuple[OptionData]:
+        chain, indices, atm_index = self.get_legs_basic(chain_symbol)
+
+        if not self.is_in_levels(chain_symbol, call_level, put_level):
+            pass
+            return
+
+        atm_idx = indices.index(atm_index)
+        call_idx = atm_idx + call_level
+        put_idx = atm_idx - put_level
+
+        call = chain.calls[indices[call_idx]]
+        put = chain.puts[indices[put_idx]]
+        return call, put
+
+    def get_bull_call_spread(self, chain_symbol:str, buy_level: int, short_level: int) -> Tuple[OptionData]:
+        chain, indices, atm_index = self.get_legs_basic(chain_symbol)
+
+        for level in [buy_level, short_level]:
+            if not self.is_in_call_levels(chain_symbol, level):
+                pass
+                return
+
+        if buy_level > short_level:
+            pass
+            return
+
+        atm_idx = indices.index(atm_index)
+        buy_call_idx = atm_idx + buy_level
+        short_call_idx = atm_idx + short_level
+
+        buy_call = chain.calls[indices[buy_call_idx]]
+        short_call = chain.calls[indices[short_call_idx]]
+        return buy_call, short_call
+
+    def get_bear_put_spread(self, chain_symbol:str, buy_level: int, short_level: int) -> Tuple[OptionData]:
+        chain, indices, atm_index = self.get_legs_basic(chain_symbol)
+
+        for level in [buy_level, short_level]:
+            if not self.is_in_put_levels(chain_symbol, level):
+                pass
+                return
+
+        if buy_level > short_level:
+            pass
+            return
+
+        atm_idx = indices.index(atm_index)
+        buy_put_idx = atm_idx - buy_level
+        short_put_idx = atm_idx - short_level
+
+        buy_put = chain.puts[indices[buy_put_idx]]
+        short_put = chain.puts[indices[short_put_idx]]
+        return buy_put, short_put
+
+    def get_bull_put_spread(self, chain_symbol:str, short_level: int, buy_level: int) -> Tuple[OptionData]:
         pass
 
-    def get_strangle_legs(self, chain_symbol:str, call_level: int, put_level: int):
+    def get_bear_call_spread(self, chain_symbol:str, short_level: int, buy_level: int) -> Tuple[OptionData]:
         pass
 
-    def get_bull_call_spread(self, chain_symbol:str, buy_level: int, short_level: int):
+    def get_call(self, chain_symbol: str, level: int):
         pass
 
-    def get_bull_put_spread(self, chain_symbol:str, short_level: int, buy_level: int):
+    def get_put(self, chain_symbol: str, level: int):
         pass
 
 
