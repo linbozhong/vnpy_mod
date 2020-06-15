@@ -44,9 +44,16 @@ STRATEGY_STRANGLE_SHORT_THREE = "strangle_short_3"
 
 
 class OptionStrategy(Enum):
+    CALL = "认购"
+    PUT = "认沽"
     SYNTHESIS = "合成"
     STRADDLE = "跨式"
     STRANGLE = "宽跨式"
+    CALL_BULL_SPREAD = "认购牛市价差"
+    PUT_BULL_SPREAD = "认沽牛市价差"
+    PUT_BEAR_SPREAD = "认沽熊市价差"
+    CALL_BEAR_SPREAD = "认购熊市价差"
+
 
 class HedgeStatus(Enum):
     NOTSTART = "未启动"
@@ -67,8 +74,8 @@ class OptionStrategyOrder:
         chain_symbol: str,
         strategy_name: OptionStrategy,
         direction: Direction,
-        strategy_ref: int,
-        send_at_break: bool
+        send_at_break: bool,
+        strategy_ref: int = 1,
     ):
         self.chain_symbol = chain_symbol
         self.strategy_name = strategy_name
@@ -76,10 +83,14 @@ class OptionStrategyOrder:
         self.strategy_ref = strategy_ref
         self.send_at_break = send_at_break
 
-        self.strategy_id = f"{self.chain_symbol}.{self.strategy_name.value}.{self.direction.value}.{self.strategy_ref}"
-        self.time = datetime.now().strftime("%H:%M:%S")
+        self.strategy_id: str = f"{self.chain_symbol}.{self.strategy_name.value}.{self.direction.value}.{self.strategy_ref}"
+        self.time: str = datetime.now().strftime("%H:%M:%S")
+        self.legs_symbol: str = ""
 
         self.status: StrategyOrderStatus = StrategyOrderStatus.SUBMITTING
+
+        self.leg_names: List[str] = [] 
+        self.legs: List[dict] = []
         self.reqs: List[OrderRequest] = []
         self.active_orderids: Set[str] = set()
 
@@ -91,8 +102,46 @@ class OptionStrategyOrder:
     def is_active(self) -> bool:
         return self.status == StrategyOrderStatus.SENDED
 
+    def convert_leg_to_dict(self, option: OptionData, volume: int, price: float = 0) -> dict:
+        d = {}
+        d['vt_symbol'] = option.vt_symbol
+        d['volume'] = volume
+        d['price'] = price
+        return d
+
+    def long_call(self, call: OptionData, volume: int, price: float = 0):
+        d = self.convert_leg_to_dict(call, volume, price)
+        d['direction'] = Direction.LONG
+        leg_name = f"LC{call.strike_price}@{volume}"
+        self.leg_names.append(leg_name)
+        self.legs.append(d)
+
+    def long_put(self, put: OptionData, volume: int, price: float = 0):
+        d = self.convert_leg_to_dict(put, volume, price)
+        d['direction'] = Direction.LONG
+        leg_name = f"LP{put.strike_price}@{volume}"
+        self.leg_names.append(leg_name)
+        self.legs.append(d)
+
+    def short_call(self, call: OptionData, volume: int, price: float = 0):
+        d = self.convert_leg_to_dict(call, volume, price)
+        d['direction'] = Direction.SHORT
+        leg_name = f"SC{call.strike_price}@{volume}"
+        self.leg_names.append(leg_name)
+        self.legs.append(d)
+
+    def short_put(self, put: OptionData, volume: int, price: float = 0):
+        d = self.convert_leg_to_dict(put, volume, price)
+        d['direction'] = Direction.SHORT
+        leg_name = f"SP{put.strike_price}@{volume}"
+        self.leg_names.append(leg_name)
+        self.legs.append(d)
+
     def add_req(self, req: OrderRequest):
         self.reqs.append(req)
+
+    def get_legs_symbol(self):
+        self.legs_symbol = '_'.join(self.leg_names)
 
 
 class OptionEngineExt(OptionEngine):
@@ -240,9 +289,9 @@ class StrategyTrading():
         put_levels = [-(i - atm_idx) for i in indices_ids]
         return call_levels, put_levels
 
-    def is_in_levels(self, chain_symbol: str, call_level: int, put_level: int) -> bool:
-        call_levels, put_levels = self.get_levels(chain_symbol)
-        return call_level in call_levels and put_level in put_levels
+    # def is_in_levels(self, chain_symbol: str, call_level: int, put_level: int) -> bool:
+    #     call_levels, put_levels = self.get_levels(chain_symbol)
+    #     return call_level in call_levels and put_level in put_levels
 
     def is_in_call_levels(self, chain_symbol: str, call_level: int) -> bool:
         call_levels, _put_levels = self.get_levels(chain_symbol)
@@ -266,72 +315,111 @@ class StrategyTrading():
         return chain, indices, atm_index
 
     def get_strangle_legs(self, chain_symbol:str, call_level: int, put_level: int) -> Tuple[OptionData]:
-        chain, indices, atm_index = self.get_legs_basic(chain_symbol)
-
-        if not self.is_in_levels(chain_symbol, call_level, put_level):
-            pass
-            return
-
-        atm_idx = indices.index(atm_index)
-        call_idx = atm_idx + call_level
-        put_idx = atm_idx - put_level
-
-        call = chain.calls[indices[call_idx]]
-        put = chain.puts[indices[put_idx]]
+        call = self.get_call(chain_symbol, call_level)
+        put = self.get_put(chain_symbol, put_level)
         return call, put
 
     def get_bull_call_spread(self, chain_symbol:str, buy_level: int, short_level: int) -> Tuple[OptionData]:
-        chain, indices, atm_index = self.get_legs_basic(chain_symbol)
-
-        for level in [buy_level, short_level]:
-            if not self.is_in_call_levels(chain_symbol, level):
-                pass
-                return
-
-        if buy_level > short_level:
+        if buy_level >= short_level:
             pass
             return
 
-        atm_idx = indices.index(atm_index)
-        buy_call_idx = atm_idx + buy_level
-        short_call_idx = atm_idx + short_level
-
-        buy_call = chain.calls[indices[buy_call_idx]]
-        short_call = chain.calls[indices[short_call_idx]]
+        buy_call = self.get_call(chain_symbol, buy_level)
+        short_call = self.get_call(chain_symbol, short_level)
         return buy_call, short_call
 
     def get_bear_put_spread(self, chain_symbol:str, buy_level: int, short_level: int) -> Tuple[OptionData]:
+        if buy_level >= short_level:
+            pass
+            return
+
+        buy_put = self.get_put(chain_symbol, buy_level)
+        short_put = self.get_put(chain_symbol, short_level)
+        return buy_put, short_put
+
+    def get_bull_put_spread(self, chain_symbol:str, short_level: int, buy_level: int) -> Tuple[OptionData]:
+        if buy_level <= short_level:
+            pass
+            return
+
+        short_put = self.get_put(chain_symbol, short_level)
+        buy_put = self.get_put(chain_symbol, buy_level)
+        return short_put, buy_put
+
+    def get_bear_call_spread(self, chain_symbol:str, short_level: int, buy_level: int) -> Tuple[OptionData]:
+        if buy_level <= short_level:
+            pass
+            return
+
+        short_call = self.get_call(chain_symbol, short_level)
+        buy_call = self.get_call(chain_symbol, buy_level)
+        return short_call, buy_call
+
+    def get_call(self, chain_symbol: str, level: int):
         chain, indices, atm_index = self.get_legs_basic(chain_symbol)
-
-        for level in [buy_level, short_level]:
-            if not self.is_in_put_levels(chain_symbol, level):
-                pass
-                return
-
-        if buy_level > short_level:
+        if not self.is_in_call_levels(chain_symbol, level):
             pass
             return
 
         atm_idx = indices.index(atm_index)
-        buy_put_idx = atm_idx - buy_level
-        short_put_idx = atm_idx - short_level
-
-        buy_put = chain.puts[indices[buy_put_idx]]
-        short_put = chain.puts[indices[short_put_idx]]
-        return buy_put, short_put
-
-    def get_bull_put_spread(self, chain_symbol:str, short_level: int, buy_level: int) -> Tuple[OptionData]:
-        pass
-
-    def get_bear_call_spread(self, chain_symbol:str, short_level: int, buy_level: int) -> Tuple[OptionData]:
-        pass
-
-    def get_call(self, chain_symbol: str, level: int):
-        pass
+        call_idx = atm_idx + level
+        call = chain.calls[indices[call_idx]]
+        return call
 
     def get_put(self, chain_symbol: str, level: int):
-        pass
+        chain, indices, atm_index = self.get_legs_basic(chain_symbol)
+        if not self.is_in_put_levels(chain_symbol, level):
+            pass
+            return
 
+        atm_idx = indices.index(atm_index)
+        put_idx = atm_idx + level
+        put = chain.calls[indices[put_idx]]
+        return put
+
+    def get_last_price(self, option: OptionData) -> float:
+        option = self.option_engine.instruments.get(option.vt_symbol)
+        return option.tick.last_price
+
+    def long_call(self, chain_symbol: str, level: int, risk_rate: float) -> OptionStrategyOrder:
+        call = self.get_call(chain_symbol, level)
+        last_price = self.get_last_price(call)
+        volume = round(self.capital * risk_rate / last_price)
+
+        strategy_name = OptionStrategy.CALL
+        strategy = OptionStrategyOrder(chain_symbol, strategy_name, Direction.LONG, False)
+        strategy.long_call(call, volume)
+        return strategy
+
+    def long_put(self, chain_symbol: str, level: int, risk_rate: float) -> OptionStrategyOrder:
+        put = self.get_put(chain_symbol, level)
+        last_price = self.get_last_price(put)
+        volume = round(self.capital * risk_rate / last_price)
+
+        strategy_name = OptionStrategy.PUT
+        strategy = OptionStrategyOrder(chain_symbol, strategy_name, Direction.LONG, False)
+        strategy.long_put(put, volume)
+        return strategy
+
+    def short_call(self, chain_symbol: str, level: int, risk_rate: float) -> OptionStrategyOrder:
+        call = self.get_call(chain_symbol, level)
+        margin = self.margin_calc.calculate_etf_margin(call)
+        volume = round(self.capital * risk_rate / margin)
+
+        strategy_name = OptionStrategy.CALL
+        strategy = OptionStrategyOrder(chain_symbol, strategy_name, Direction.SHORT, False)
+        strategy.short_call(call, volume)
+        return strategy
+
+    def short_put(self, chain_symbol: str, level: int, risk_rate: float) -> OptionStrategyOrder:
+        put = self.get_put(chain_symbol, level)
+        margin = self.margin_calc.calculate_etf_margin(put)
+        volume = round(self.capital * risk_rate / margin)
+
+        strategy_name = OptionStrategy.PUT
+        strategy = OptionStrategyOrder(chain_symbol, strategy_name, Direction.SHORT, False)
+        strategy.short_put(put, volume)
+        return strategy
 
 class HedgeEngine:
 
@@ -906,6 +994,14 @@ class StrategyTrader:
         self,
         strategy_order: OptionStrategyOrder
     ) -> None:
+        strategy_order.get_legs_symbol()
+        for leg in strategy_order.legs:
+            if leg['direction'] == Direction.LONG:
+                req = self.buy(leg['vt_symbol'], leg['volume'], leg['price'])
+            else:
+                req = self.short(leg['vt_symbol'], leg['volume'], leg['price'])
+            strategy_order.add_req(req)
+
         self.strategy_orders[strategy_order.strategy_id] = strategy_order
 
     def generate_order_req(
