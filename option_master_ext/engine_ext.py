@@ -60,6 +60,7 @@ class HedgeStatus(Enum):
     RUNNING = "监测中"
     HEDGING = "对冲中"
 
+
 class StrategyOrderStatus(Enum):
     SUBMITTING = "提交中"
     SENDED = "已发送"
@@ -232,6 +233,7 @@ class StrategyTrading():
         self.etf_m_indices: Dict[str, list] = {}
 
         self.capital: float = 0.0
+        self.margin_multiple: float = 1.2
 
     def set_capital(self, capital: float):
         self.capital = capital
@@ -240,9 +242,9 @@ class StrategyTrading():
         ratio = call.cash_delta / put.cash_delta
         call_margin = self.margin_calc.get_margin(call.vt_symbol)
         put_margin = self.margin_calc.get_margin(put.vt_symbol)
-        call_volume = round(money / (call_margin + put_margin * ratio))
-        put_volume = round(call_volume * ratio)
-        return call_volume, put_volume
+        call_vol_rateume = round(money / (call_margin + put_margin * ratio))
+        put_volume = round(call_vol_rateume * ratio)
+        return call_vol_rateume, put_volume
 
     def get_etf_m_atm(self, chain_symbol: str, exclude_a: bool = True):
         chain = self.option_engine.chains.get(chain_symbol)
@@ -315,9 +317,25 @@ class StrategyTrading():
         return chain, indices, atm_index
 
     def get_strangle_legs(self, chain_symbol:str, call_level: int, put_level: int) -> Tuple[OptionData]:
+        if call_level == 0 and put_level == 0:
+            print('can not use atm')
+            return
+
+        if call_level >= 0 and put_level < 0:
+            print('invalid itm group')
+            return
+
+        if call_level <= 0 and put_level > 0:
+            print('invalid otm group')
+            return
+        
         call = self.get_call(chain_symbol, call_level)
         put = self.get_put(chain_symbol, put_level)
         return call, put
+
+    def get_call_put_volume_ratio(self, call: OptionData, put: OptionData):
+        delta_ratio = call.cash_delta / put.cash_delta
+        return round(1 / delta_ratio, 2)
 
     def get_bull_call_spread(self, chain_symbol:str, buy_level: int, short_level: int) -> Tuple[OptionData]:
         if buy_level >= short_level:
@@ -403,7 +421,7 @@ class StrategyTrading():
 
     def short_call(self, chain_symbol: str, level: int, risk_rate: float) -> OptionStrategyOrder:
         call = self.get_call(chain_symbol, level)
-        margin = self.margin_calc.calculate_etf_margin(call)
+        margin = self.margin_calc.get_margin(call.vt_symbol) * self.margin_multiple
         volume = round(self.capital * risk_rate / margin)
 
         strategy_name = OptionStrategy.CALL
@@ -413,13 +431,68 @@ class StrategyTrading():
 
     def short_put(self, chain_symbol: str, level: int, risk_rate: float) -> OptionStrategyOrder:
         put = self.get_put(chain_symbol, level)
-        margin = self.margin_calc.calculate_etf_margin(put)
+        margin = self.margin_calc.get_margin(put.vt_symbol) * self.margin_multiple
         volume = round(self.capital * risk_rate / margin)
 
         strategy_name = OptionStrategy.PUT
         strategy = OptionStrategyOrder(chain_symbol, strategy_name, Direction.SHORT, False)
         strategy.short_put(put, volume)
         return strategy
+
+    def get_neutral_delta_vol(self, call: OptionData, put: OptionData, risk_rate: float) -> Tuple[int]:
+        call_vol_rate = self.get_call_put_volume_ratio(call, put)
+        call_margin = self.margin_calc.get_margin(call.vt_symbol) * call_vol_rate
+        put_margin = self.margin_calc.get_margin(put.vt_symbol)
+        group_vol = self.capital * risk_rate / ((call_margin + put_margin) * self.margin_multiple)
+
+        if not group_vol:
+            group_vol = 1
+        call_vol = round(group_vol * call_vol_rate)
+        if not call_vol:
+            call_vol = 1
+        return call_vol, group_vol
+
+    def trade_volatility(
+        self,
+        chain_symbol: str,
+        strategy_name: OptionStrategy,
+        call_level: int,
+        put_level: int,
+        risk_rate: float,
+        direction: Direction
+    ) -> OptionStrategyOrder:
+        
+        if strategy_name == OptionStrategy.STRADDLE:
+            call, put = self.get_straddle_legs(chain_symbol)
+        else:
+            call, put = self.get_strangle_legs(chain_symbol, call_level, put_level)
+        call_vol, put_vol = self.get_neutral_delta_vol(call, put, risk_rate)
+
+        strategy = OptionStrategyOrder(chain_symbol, strategy_name, direction, False)
+        if direction == Direction.LONG:
+            strategy.long_call(call, call_vol)
+            strategy.long_put(put, put_vol)
+        else:
+            strategy.short_call(call, call_vol)
+            strategy.short_put(put, put_vol)
+        return strategy
+
+    def long_straddle(self, chain_symbol: str, risk_rate: float) -> OptionStrategyOrder:
+        name = OptionStrategy.STRADDLE
+        return self.trade_volatility(chain_symbol, name, 0, 0, risk_rate, Direction.LONG)
+
+    def short_straddle(self, chain_symbol: str, risk_rate: float) -> OptionStrategyOrder:
+        name = OptionStrategy.STRADDLE
+        return self.trade_volatility(chain_symbol, name, 0, 0, risk_rate, Direction.SHORT)
+
+    def long_strangle(self, chain_symbol: str, call_level: int, put_level: int, risk_rate: float) -> OptionStrategyOrder:
+        name = OptionStrategy.STRANGLE
+        return self.trade_volatility(chain_symbol, name, call_level, put_level, risk_rate, Direction.LONG)
+
+    def short_strangle(self, chain_symbol: str, call_level: int, put_level: int, risk_rate: float) -> OptionStrategyOrder:
+        name = OptionStrategy.STRANGLE
+        return self.trade_volatility(chain_symbol, name, call_level, put_level, risk_rate, Direction.SHORT)
+
 
 class HedgeEngine:
 
