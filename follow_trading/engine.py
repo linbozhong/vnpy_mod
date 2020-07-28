@@ -88,7 +88,8 @@ class FollowEngine(BaseEngine):
         self.filter_trade_timeout = 60
         self.cancel_order_timeout = 10
         self.multiples = 1
-        self.tick_add = 10
+        self.tick_add = 5
+        self.close_tick_add = 25
         self.inverse_follow = False
         self.order_type = OrderType.LIMIT
 
@@ -126,6 +127,11 @@ class FollowEngine(BaseEngine):
         self.is_hedged_closed = False
 
         self.is_trade_saved = False
+
+        self.source_traded_net_pos = 0
+        self.target_traded_net_pos = 0
+        self.is_base_pos_trading = False
+        self.target_traded_pos_list = []
 
         # Timeout auto cancel
         self.active_order_set = set()
@@ -433,6 +439,21 @@ class FollowEngine(BaseEngine):
         self.write_log(f"当日合约数据保存成功")
 
     @staticmethod
+    def get_trade_net_vol(trade: TradeData):
+        if trade.direction == Direction.LONG:
+            vol = trade.volume
+        else:
+            vol = -trade.volume
+        return vol
+
+    @staticmethod
+    def get_trade_dict(trade: TradeData, is_close: bool):
+        d ={}
+        d['trade'] = trade
+        d['is_close'] = is_close
+        return d
+
+    @staticmethod
     def get_trade_type(trade: TradeData):
         """
         Convert trade type to buy/sell/short/cover
@@ -538,6 +559,7 @@ class FollowEngine(BaseEngine):
         """"""
         try:
             trade = event.data
+            self.write_log(f"{trade.vt_tradeid} 成交信号已获取。")
 
             # Filter duplicate trade push if reconnect gateway for disconnected reason.
             if trade.vt_tradeid in self.vt_tradeids:
@@ -555,19 +577,57 @@ class FollowEngine(BaseEngine):
                 if not self.filter_source_trade(trade):
                     return
 
-                # generate order request based on trade
-                req = self.convert_trade_to_order_req(trade)
-                if not req:
-                    return
+                # get open or close by traded net pos
+                trade_net_vol = self.get_trade_net_vol(trade)
+                trades = []
+                if self.source_traded_net_pos == 0:
+                    trades.append(self.get_trade_dict(trade, False))
+                elif self.source_traded_net_pos > 0:
+                    if trade_net_vol > 0:
+                        trades.append(self.get_trade_dict(trade, False))
+                    else:
+                        if abs(trade_net_vol) < self.source_traded_net_pos:
+                            trades.append(self.get_trade_dict(trade, True))
+                        else:
+                            close_trade = copy(trade)
+                            close_trade.volume = self.source_traded_net_pos
+                            trades.append(self.get_trade_dict(close_trade, True))
+                            open_trade = copy(trade)
+                            open_trade.volume = abs(trade_net_vol + self.source_traded_net_pos)
+                            trades.append(self.get_trade_dict(open_trade, False))
+                else:
+                    if trade_net_vol < 0:
+                        trades.append(self.get_trade_dict(trade, False))
+                    else:
+                        if trade_net_vol < abs(self.source_traded_net_pos):
+                            trades.append(self.get_trade_dict(trade, True))
+                        else:
+                            close_trade = copy(trade)
+                            close_trade.volume = abs(self.source_traded_net_pos)
+                            trades.append(self.get_trade_dict(close_trade, True))
+                            open_trade = copy(trade)
+                            open_trade.volume = abs(trade_net_vol + self.source_traded_net_pos)
+                            trades.append(self.get_trade_dict(open_trade, False))
 
-                # send orders or push to order cache
-                self.send_order(req, trade.vt_tradeid)
+                for trade_dict in trades:
+                    trade = trade_dict['trade']
+                    is_close = trade_dict['is_close']
+
+                    # generate order request based on trade
+                    req = self.convert_trade_to_order_req(trade, is_close)
+                    if not req:
+                        return
+
+                    # send orders or push to order cache
+                    self.send_order(req, trade.vt_tradeid, is_close)
             else:
                 self.offset_converter.update_trade(trade)
                 if not self.filter_target_not_follow(trade.vt_orderid):
                     self.write_log(f"{trade.vt_tradeid} 不是跟随策略的成交单。")
                     return
                 self.update_target_pos(trade)
+                self.update_target_traded_net_pos(trade)
+                
         except:  # noqa
             msg = f"处理成交事件，触发异常：\n{traceback.format_exc()}"
             self.write_log(msg)
@@ -740,6 +800,11 @@ class FollowEngine(BaseEngine):
         self.put_pos_delta_event(vt_symbol)
         self.write_log(f"{vt_symbol}仓位更新成功")
 
+    def update_target_traded_net_pos(self, trade: TradeData):
+        vol = trade.volume if trade.direction == Direction.LONG else -trade.volume
+        self.target_traded_pos_list.append(vol)
+        self.target_traded_net_pos = sum(self.target_traded_pos_list)
+
     def subscribe(self, vt_symbol: str):
         """
         Subscribe to get latest price and limit price.
@@ -900,7 +965,7 @@ class FollowEngine(BaseEngine):
 
         return price
 
-    def convert_trade_to_order_req(self, trade: TradeData):
+    def convert_trade_to_order_req(self, trade: TradeData, is_close: bool = False):
         """
         Trade convert to order request
         """
@@ -929,7 +994,16 @@ class FollowEngine(BaseEngine):
         if self.strip_digit(trade.vt_symbol) in self.intraday_symbols:
             return req
 
-        # Normal mode, check position if close
+        # check target traded net pos if action is close
+        if is_close:
+            if req.volume > abs(self.target_traded_net_pos):
+                req.volume = abs(self.target_traded_net_pos)
+                self.target_traded_net_pos = 0
+            else:
+                vol = req.volume if trade.direction == Direction.LONG else -req.volume
+                self.target_traded_net_pos += vol
+
+        # Normal mode, check position if offset is close
         if trade.offset != Offset.OPEN:
             req.offset = Offset.CLOSE
             return self.validate_target_pos(req)
@@ -948,7 +1022,8 @@ class FollowEngine(BaseEngine):
     def send_order(
         self,
         req: OrderRequest,
-        vt_tradeid: str
+        vt_tradeid: str,
+        is_close: bool = False
     ):
         """
         Send order to order queue.
