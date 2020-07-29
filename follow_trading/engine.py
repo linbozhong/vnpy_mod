@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, time
 from enum import Enum
 from copy import copy
 from dataclasses import dataclass
+from typing import Optional
 
 from vnpy.event import EventEngine, Event
 from vnpy.trader.engine import BaseEngine, MainEngine
@@ -15,7 +16,8 @@ from vnpy.trader.converter import OffsetConverter
 from vnpy.trader.constant import (
     OrderType,
     Direction,
-    Offset
+    Offset,
+    Status
 )
 from vnpy.trader.event import (
     EVENT_TICK,
@@ -88,8 +90,12 @@ class FollowEngine(BaseEngine):
         self.filter_trade_timeout = 60
         self.cancel_order_timeout = 10
         self.multiples = 1
+
         self.tick_add = 5
-        self.close_tick_add = 25
+        self.must_done_tick_add = 25
+        self.chase_order_tick_add = 2
+        self.chase_order_timeout = 10
+
         self.inverse_follow = False
         self.order_type = OrderType.LIMIT
 
@@ -114,7 +120,7 @@ class FollowEngine(BaseEngine):
         self.follow_setting = {}
 
         self.sync_order_ref = 0
-        self.tradeid_orderids_dict = {}  # vt_tradeid: vt_orderid
+        self.tradeid_orderids_dict = {}  # vt_tradeid: [vt_orderid]
         self.positions = {}
         self.target_positions = {}
 
@@ -128,10 +134,17 @@ class FollowEngine(BaseEngine):
 
         self.is_trade_saved = False
 
+        # Intraday trade variables
+        self.is_base_pos_trading = False
+
         self.source_traded_net_pos = 0
         self.target_traded_net_pos = 0
-        self.is_base_pos_trading = False
         self.target_traded_pos_list = []
+        self.must_done_order_dict = {}      # vt_orderid: bool
+        self.must_done_orderids = set()
+        self.must_done_ancestor_dict = {}   # vt_orderid: vt_orderid
+
+        self.intraday_orderids = set()
 
         # Timeout auto cancel
         self.active_order_set = set()
@@ -253,7 +266,7 @@ class FollowEngine(BaseEngine):
         print(self.follow_setting)
         for name in self.parameters:
             value = self.follow_setting.get(name, None)
-            if value:
+            if value is not None:
                 if name == 'order_type':
                     setattr(self, name, OrderType(value))
                 elif name == 'run_type':
@@ -337,8 +350,9 @@ class FollowEngine(BaseEngine):
 
             trade_list.append(d)
         df = pd.DataFrame(trade_list)
-        df.to_csv(trade_file_path, index=False, encoding='utf-8')
-        self.write_log("成交记录保存成功")
+        if not df.empty:
+            df.to_csv(trade_file_path, index=False, encoding='utf-8')
+            self.write_log("成交记录保存成功")
 
     def save_account_info(self):
         """
@@ -447,10 +461,10 @@ class FollowEngine(BaseEngine):
         return vol
 
     @staticmethod
-    def get_trade_dict(trade: TradeData, is_close: bool):
+    def get_trade_dict(trade: TradeData, is_must_done: bool):
         d ={}
         d['trade'] = trade
-        d['is_close'] = is_close
+        d['is_must_done'] = is_must_done
         return d
 
     @staticmethod
@@ -551,15 +565,44 @@ class FollowEngine(BaseEngine):
                 if vt_orderid in self.active_order_set:
                     self.active_order_counter.pop(vt_orderid)
                     self.active_order_set.remove(vt_orderid)
+
+                # If intraday order canceled, target net pos need refresh
+                if order.status == Status.CANCELLED:
+                    if vt_orderid in self.intraday_orderids:
+                        self.refresh_target_traded_net_pos()
+                    
+                    must_done = self.must_done_order_dict.get(vt_orderid, None)
+                    if must_done:
+                        self.resend_must_done_order(order)
         except:  # noqa
             msg = f"处理委托事件，触发异常：\n{traceback.format_exc()}"
             self.write_log(msg)
+
+
+    def resend_must_done_order(self, order: OrderData):
+        new_volume = order.volume - order.traded
+        price = self.convert_order_price(order.vt_symbol, order.direction, tick_add=self.chase_order_tick_add)
+
+        req = OrderRequest(
+            symbol=order.symbol,
+            exchange=order.exchange,
+            direction=order.direction,
+            type=OrderType.LIMIT,
+            volume=new_volume,
+            price=price,
+            offset=order.offset
+        )
+
+        vt_orderid = self.main_engine.send_order(req, self.target_gateway_name)
+        self.must_done_orderids.add(vt_orderid)
+        self.must_done_order_dict[vt_orderid] = True
+
 
     def process_trade_event(self, event: Event):
         """"""
         try:
             trade = event.data
-            self.write_log(f"{trade.vt_tradeid} 成交信号已获取。")
+            # self.write_log(f"{trade.vt_tradeid} 成交信号已获取。")
 
             # Filter duplicate trade push if reconnect gateway for disconnected reason.
             if trade.vt_tradeid in self.vt_tradeids:
@@ -577,56 +620,35 @@ class FollowEngine(BaseEngine):
                 if not self.filter_source_trade(trade):
                     return
 
-                # get open or close by traded net pos
-                trade_net_vol = self.get_trade_net_vol(trade)
-                trades = []
-                if self.source_traded_net_pos == 0:
-                    trades.append(self.get_trade_dict(trade, False))
-                elif self.source_traded_net_pos > 0:
-                    if trade_net_vol > 0:
-                        trades.append(self.get_trade_dict(trade, False))
-                    else:
-                        if abs(trade_net_vol) < self.source_traded_net_pos:
-                            trades.append(self.get_trade_dict(trade, True))
-                        else:
-                            close_trade = copy(trade)
-                            close_trade.volume = self.source_traded_net_pos
-                            trades.append(self.get_trade_dict(close_trade, True))
-                            open_trade = copy(trade)
-                            open_trade.volume = abs(trade_net_vol + self.source_traded_net_pos)
-                            trades.append(self.get_trade_dict(open_trade, False))
+                # split trade to open or close
+                if self.is_base_pos_trading:
+                    trade_dict = self.get_trade_dict(trade, True)
+                    trades = [trade_dict]
                 else:
-                    if trade_net_vol < 0:
-                        trades.append(self.get_trade_dict(trade, False))
-                    else:
-                        if trade_net_vol < abs(self.source_traded_net_pos):
-                            trades.append(self.get_trade_dict(trade, True))
-                        else:
-                            close_trade = copy(trade)
-                            close_trade.volume = abs(self.source_traded_net_pos)
-                            trades.append(self.get_trade_dict(close_trade, True))
-                            open_trade = copy(trade)
-                            open_trade.volume = abs(trade_net_vol + self.source_traded_net_pos)
-                            trades.append(self.get_trade_dict(open_trade, False))
+                    trades = self.split_trade_to_open_close(trade)
+                    # update source traded net pos
+                    self.source_traded_net_pos += self.get_trade_net_vol(trade)
 
                 for trade_dict in trades:
                     trade = trade_dict['trade']
-                    is_close = trade_dict['is_close']
+                    is_must_done = trade_dict['is_must_done']
 
                     # generate order request based on trade
-                    req = self.convert_trade_to_order_req(trade, is_close)
+                    req = self.convert_trade_to_order_req(trade, is_must_done)
                     if not req:
                         return
 
                     # send orders or push to order cache
-                    self.send_order(req, trade.vt_tradeid, is_close)
+                    self.send_order(req, trade.vt_tradeid, is_must_done)
             else:
                 self.offset_converter.update_trade(trade)
                 if not self.filter_target_not_follow(trade.vt_orderid):
                     self.write_log(f"{trade.vt_tradeid} 不是跟随策略的成交单。")
                     return
+
                 self.update_target_pos(trade)
-                self.update_target_traded_net_pos(trade)
+                if trade.vt_orderid in self.intraday_orderids:
+                    self.update_target_traded_net_pos(trade)
                 
         except:  # noqa
             msg = f"处理成交事件，触发异常：\n{traceback.format_exc()}"
@@ -661,6 +683,42 @@ class FollowEngine(BaseEngine):
             msg = f"处理持仓事件，触发异常：\n{traceback.format_exc()}"
             self.write_log(msg)
 
+    def split_trade_to_open_close(self, trade: TradeData):
+        """
+        split trade to open or close by today traded net pos
+        """
+        trades = []
+        trade_net_vol = self.get_trade_net_vol(trade)
+        if self.source_traded_net_pos == 0:
+            trades.append(self.get_trade_dict(trade, False))
+        elif self.source_traded_net_pos > 0:
+            if trade_net_vol > 0:
+                trades.append(self.get_trade_dict(trade, False))
+            else:
+                if abs(trade_net_vol) <= self.source_traded_net_pos:
+                    trades.append(self.get_trade_dict(trade, True))
+                else:
+                    close_trade = copy(trade)
+                    close_trade.volume = self.source_traded_net_pos
+                    trades.append(self.get_trade_dict(close_trade, True))
+                    open_trade = copy(trade)
+                    open_trade.volume = abs(trade_net_vol + self.source_traded_net_pos)
+                    trades.append(self.get_trade_dict(open_trade, False))
+        else:
+            if trade_net_vol < 0:
+                trades.append(self.get_trade_dict(trade, False))
+            else:
+                if trade_net_vol <= abs(self.source_traded_net_pos):
+                    trades.append(self.get_trade_dict(trade, True))
+                else:
+                    close_trade = copy(trade)
+                    close_trade.volume = abs(self.source_traded_net_pos)
+                    trades.append(self.get_trade_dict(close_trade, True))
+                    open_trade = copy(trade)
+                    open_trade.volume = abs(trade_net_vol + self.source_traded_net_pos)
+                    trades.append(self.get_trade_dict(open_trade, False))
+        return trades
+
     def pre_subscribe(self, position: PositionData):
         """
         Pre subscribe symbol in source gateway position to speed up following.
@@ -679,12 +737,17 @@ class FollowEngine(BaseEngine):
             if counter is None:
                 continue
 
+            if vt_orderid in self.must_done_orderids:
+                cancel_timeout = self.chase_order_timeout
+            else:
+                cancel_timeout = self.cancel_order_timeout
+
             cancel_counter = self.cancel_counter.get(vt_orderid, None)
             if cancel_counter and cancel_counter > self.max_cancel:
                 self.write_log(f"委托单{vt_orderid} 撤单超过{self.max_cancel}次，停止撤单。")
                 continue
 
-            if counter > self.cancel_order_timeout:
+            if counter > cancel_timeout:
                 self.cancel_order(vt_orderid)
                 self.active_order_counter[vt_orderid] = 0
                 self.cancel_counter[vt_orderid] += 1
@@ -801,8 +864,11 @@ class FollowEngine(BaseEngine):
         self.write_log(f"{vt_symbol}仓位更新成功")
 
     def update_target_traded_net_pos(self, trade: TradeData):
-        vol = trade.volume if trade.direction == Direction.LONG else -trade.volume
+        vol = self.get_trade_net_vol(trade)
         self.target_traded_pos_list.append(vol)
+        self.target_traded_net_pos = sum(self.target_traded_pos_list)
+
+    def refresh_target_traded_net_pos(self):
         self.target_traded_net_pos = sum(self.target_traded_pos_list)
 
     def subscribe(self, vt_symbol: str):
@@ -886,6 +952,9 @@ class FollowEngine(BaseEngine):
 
     def filter_target_not_follow(self, vt_orderid: str):
         """"""
+        if vt_orderid in self.must_done_orderids:
+            return True
+
         for sub_list in self.tradeid_orderids_dict.values():
             for orderid in sub_list:
                 if vt_orderid == orderid:
@@ -921,11 +990,16 @@ class FollowEngine(BaseEngine):
         self,
         vt_symbol: str,
         direction: Direction,
-        price: float = 0
+        price: float = 0,
+        is_must_done: bool = False,
+        tick_add: Optional[int] = None
     ):
         """
         Make sure price is in limit-up and limit-down range.
         """
+        if tick_add is None:
+            tick_add = self.must_done_tick_add if is_must_done else self.tick_add
+
         # call this function only self.is_price_inited() is True.
         limit_price = self.limited_prices.get(vt_symbol)
         latest_prices = self.latest_prices.get(vt_symbol)
@@ -955,17 +1029,17 @@ class FollowEngine(BaseEngine):
             if self.order_type == OrderType.MARKET or price == -1:
                 price = limit_price['limit_up']
             else:
-                price = min(limit_price['limit_up'], price + self.tick_add * contract.pricetick)
+                price = min(limit_price['limit_up'], price + tick_add * contract.pricetick)
         else:
             price = bid_price if not price else price
             if self.order_type == OrderType.MARKET or price == -1:
                 price = limit_price['limit_down']
             else:
-                price = max(limit_price['limit_down'], price - self.tick_add * contract.pricetick)
+                price = max(limit_price['limit_down'], price - tick_add * contract.pricetick)
 
         return price
 
-    def convert_trade_to_order_req(self, trade: TradeData, is_close: bool = False):
+    def convert_trade_to_order_req(self, trade: TradeData, is_must_done: bool = False):
         """
         Trade convert to order request
         """
@@ -990,18 +1064,18 @@ class FollowEngine(BaseEngine):
         if self.inverse_follow:
             req = self.inverse_req(req)
 
-        # T0 symbol use lock mode, redirect.
-        if self.strip_digit(trade.vt_symbol) in self.intraday_symbols:
-            return req
-
-        # check target traded net pos if action is close
-        if is_close:
+        # Check target traded net pos if intraday order is close order
+        if (not self.is_base_pos_trading) and is_must_done:
             if req.volume > abs(self.target_traded_net_pos):
                 req.volume = abs(self.target_traded_net_pos)
                 self.target_traded_net_pos = 0
             else:
-                vol = req.volume if trade.direction == Direction.LONG else -req.volume
+                vol = self.get_trade_net_vol(trade)
                 self.target_traded_net_pos += vol
+
+        # T0 symbol use lock mode, redirect.
+        if self.strip_digit(trade.vt_symbol) in self.intraday_symbols:
+            return req
 
         # Normal mode, check position if offset is close
         if trade.offset != Offset.OPEN:
@@ -1023,7 +1097,7 @@ class FollowEngine(BaseEngine):
         self,
         req: OrderRequest,
         vt_tradeid: str,
-        is_close: bool = False
+        is_must_done: bool = False
     ):
         """
         Send order to order queue.
@@ -1031,8 +1105,9 @@ class FollowEngine(BaseEngine):
         if not self.is_price_inited(req.vt_symbol):
             self.subscribe(req.vt_symbol)
             self.write_log(f"{req.vt_symbol}订阅请求已发送。")
-        self.due_out_req_list.append((vt_tradeid, req))
+        self.due_out_req_list.append((vt_tradeid, req, is_must_done))
         self.write_log(f"{vt_tradeid}核验通过，已进入发单队列")
+
 
     def send_queue_order(self):
         """
@@ -1042,32 +1117,37 @@ class FollowEngine(BaseEngine):
             return
 
         for req_tuple in copy(self.due_out_req_list):
-            vt_tradeid, req = req_tuple
+            vt_tradeid, req, is_must_done = req_tuple
             if not self.is_price_inited(req.vt_symbol):
                 print('Limit unready in send queue order event')
                 continue
 
-            self.send_and_record(req, vt_tradeid)
+            self.send_and_record(req, vt_tradeid, is_must_done)
             self.due_out_req_list.remove(req_tuple)
 
     def send_and_record(
         self,
         req: OrderRequest,
-        vt_tradeid: str
+        vt_tradeid: str,
+        is_must_done: bool = False
     ):
         """
         Send and record result.
         """
-        req.price = self.convert_order_price(req.vt_symbol, req.direction, req.price)
-        vt_orderids = self.convert_and_send_orders(req)
+        req.price = self.convert_order_price(req.vt_symbol, req.direction, req.price, is_must_done)
+        vt_orderids = self.convert_and_send_orders(req, is_must_done)
         if vt_orderids:
             self.tradeid_orderids_dict[vt_tradeid] = vt_orderids
+            
             if vt_tradeid.startswith('SYNC'):
                 order_prefix = "同步单"
+                self.intraday_orderids.update(vt_orderids)  # ignore base pos trading mode
             elif vt_tradeid.startswith('BASIC'):
                 order_prefix = "底仓单"
             else:
                 order_prefix = "跟随单"
+                if not self.is_base_pos_trading:
+                    self.intraday_orderids.update(vt_orderids)
 
             self.write_log(f"{order_prefix} {vt_tradeid}发单成功，委托号：{'  '.join(vt_orderids)}。")
 
@@ -1076,7 +1156,7 @@ class FollowEngine(BaseEngine):
             # self.write_log(f"{order_prefix} {vt_tradeid}记录保存成功。")
         return vt_orderids
 
-    def convert_and_send_orders(self, req: OrderRequest):
+    def convert_and_send_orders(self, req: OrderRequest, is_must_done: bool = False):
         """
         Convert a req to req list and send order to gateway.
         """
@@ -1095,7 +1175,12 @@ class FollowEngine(BaseEngine):
                 vt_orderid = self.main_engine.send_order(splited_req, self.target_gateway_name)
                 if not vt_orderid:
                     continue
+
                 vt_orderids.append(vt_orderid)
+                self.must_done_order_dict[vt_orderid] = is_must_done
+                if is_must_done:
+                    self.must_done_orderids.add(vt_orderid)
+                    self.must_done_ancestor_dict[vt_orderid] = vt_orderid
                 self.offset_converter.update_order_request(splited_req, vt_orderid)
 
         return vt_orderids
