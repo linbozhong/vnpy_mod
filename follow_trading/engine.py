@@ -329,12 +329,14 @@ class FollowEngine(BaseEngine):
         trade_folder = get_folder_path('trade')
         trade_file_path = trade_folder.joinpath(f"trade_{today}.csv")
 
-        account_id = 'null'
+        gateway_dict = dict()
+        gateway_dict[self.source_gateway_name] = "source"
+        gateway_dict[self.target_gateway_name] = "target"
+
+        account_dict = dict()
         accounts = self.main_engine.get_all_accounts()
         for account in accounts:
-            if account.gateway_name == self.source_gateway_name:
-                account_id = account.accountid
-                break
+            account_dict[account.gateway_name] = account.accountid
 
         trades = self.main_engine.get_all_trades()
         trade_list = []
@@ -345,12 +347,12 @@ class FollowEngine(BaseEngine):
             d["offset"] = d["offset"].value
             d['dt'] = f"{today} {d['time']}"
             d['date'] = f"{today}"
-            d['source_account'] = account_id
             d.pop("vt_symbol")
-
             trade_list.append(d)
         df = pd.DataFrame(trade_list)
         if not df.empty:
+            df['account_type'] = df['gateway_name'].map(gateway_dict)
+            df['account_id'] = df['gateway_name'].map(account_dict)
             df.to_csv(trade_file_path, index=False, encoding='utf-8')
             self.write_log("成交记录保存成功")
 
