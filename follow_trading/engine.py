@@ -65,6 +65,11 @@ class TradeType(Enum):
     COVER = "买平"
 
 
+class OrderBasePrice(Enum):
+    GOOD_FOR_OTHER = "对手价"
+    GOOD_FOR_SELF = "挂单价"
+
+
 APP_NAME = "FollowTrading"
 EVENT_FOLLOW_LOG = "eFollowLog"
 EVENT_FOLLOW_POS_DELTA = "eFollowPosDelta"
@@ -93,8 +98,11 @@ class FollowEngine(BaseEngine):
 
         self.tick_add = 5
         self.must_done_tick_add = 25
-        self.chase_order_tick_add = 2
+
+        self.is_chase_order = False
+        self.chase_order_tick_add = 5
         self.chase_order_timeout = 10
+        self.chase_max_resend = 3
 
         self.inverse_follow = False
         self.order_type = OrderType.LIMIT
@@ -140,11 +148,16 @@ class FollowEngine(BaseEngine):
         self.source_traded_net_pos = 0
         self.target_traded_net_pos = 0
         self.target_traded_pos_list = []
-        self.must_done_order_dict = {}      # vt_orderid: bool
-        self.must_done_orderids = set()
-        self.must_done_ancestor_dict = {}   # vt_orderid: vt_orderid
+        
+        # Chase order variables
+        # self.chase_order_dict = {}      # vt_orderid: bool
+        self.chase_orderids = set()
+        self.chase_ancestor_dict = {}   # vt_orderid: vt_orderid
+        self.chase_resend_count_dict = {}   # vt_orderid: int
 
         self.intraday_orderids = set()
+
+        self.order_volumes_to_follow = [1, 2]
 
         # Timeout auto cancel
         self.active_order_set = set()
@@ -432,7 +445,7 @@ class FollowEngine(BaseEngine):
         # self.save_follow_data()
 
         self.save_trade()
-        self.save_contract()
+        # self.save_contract()
 
         now_time = datetime.now().time()
         if NIGHT_MARKET_BEGIN > now_time >= DAYLIGHT_MARKET_END:
@@ -573,32 +586,17 @@ class FollowEngine(BaseEngine):
                     if vt_orderid in self.intraday_orderids:
                         self.refresh_target_traded_net_pos()
                     
-                    must_done = self.must_done_order_dict.get(vt_orderid, None)
-                    if must_done:
-                        self.resend_must_done_order(order)
+                    # resend order if need chase
+                    if vt_orderid in self.chase_orderids:
+                        ancestor_orderid = self.chase_ancestor_dict.get(vt_orderid)
+                        resend_count = self.chase_resend_count_dict.get(ancestor_orderid)
+                        if resend_count < self.chase_max_resend:
+                            self.resend_order(order)
+                        else:
+                            self.write_log(f"{ancestor_orderid}委托超过最大追单次数")
         except:  # noqa
             msg = f"处理委托事件，触发异常：\n{traceback.format_exc()}"
             self.write_log(msg)
-
-
-    def resend_must_done_order(self, order: OrderData):
-        new_volume = order.volume - order.traded
-        price = self.convert_order_price(order.vt_symbol, order.direction, tick_add=self.chase_order_tick_add)
-
-        req = OrderRequest(
-            symbol=order.symbol,
-            exchange=order.exchange,
-            direction=order.direction,
-            type=OrderType.LIMIT,
-            volume=new_volume,
-            price=price,
-            offset=order.offset
-        )
-
-        vt_orderid = self.main_engine.send_order(req, self.target_gateway_name)
-        self.must_done_orderids.add(vt_orderid)
-        self.must_done_order_dict[vt_orderid] = True
-
 
     def process_trade_event(self, event: Event):
         """"""
@@ -739,10 +737,10 @@ class FollowEngine(BaseEngine):
             if counter is None:
                 continue
 
-            if vt_orderid in self.must_done_orderids:
-                cancel_timeout = self.chase_order_timeout
+            if vt_orderid in self.chase_orderids:
+                cancel_timeout = self.chase_order_timeout * 2
             else:
-                cancel_timeout = self.cancel_order_timeout
+                cancel_timeout = self.cancel_order_timeout * 2
 
             cancel_counter = self.cancel_counter.get(vt_orderid, None)
             if cancel_counter and cancel_counter > self.max_cancel:
@@ -756,6 +754,30 @@ class FollowEngine(BaseEngine):
                 self.write_log(f"委托单{vt_orderid} 超过最大等待时间，已执行撤单。")
 
             self.active_order_counter[vt_orderid] += 1
+
+    def resend_order(self, order: OrderData):
+        """"""
+        new_volume = order.volume - order.traded
+        price = self.convert_order_price(order.vt_symbol,
+                                         order.direction,
+                                         tick_add=self.chase_order_tick_add,
+                                         base_price=OrderBasePrice.GOOD_FOR_SELF)
+        ancestor_orderid = self.chase_ancestor_dict.get(order.vt_orderid)
+
+        req = OrderRequest(
+            symbol=order.symbol,
+            exchange=order.exchange,
+            direction=order.direction,
+            type=OrderType.LIMIT,
+            volume=new_volume,
+            price=price,
+            offset=order.offset
+        )
+
+        vt_orderid = self.main_engine.send_order(req, self.target_gateway_name)
+        self.chase_orderids.add(vt_orderid)
+        self.chase_ancestor_dict[vt_orderid] = ancestor_orderid
+        self.chase_resend_count_dict[ancestor_orderid] += 1
 
     def refresh_pos(self):
         """
@@ -866,11 +888,13 @@ class FollowEngine(BaseEngine):
         self.write_log(f"{vt_symbol}仓位更新成功")
 
     def update_target_traded_net_pos(self, trade: TradeData):
+        """"""
         vol = self.get_trade_net_vol(trade)
         self.target_traded_pos_list.append(vol)
         self.target_traded_net_pos = sum(self.target_traded_pos_list)
 
     def refresh_target_traded_net_pos(self):
+        """"""
         self.target_traded_net_pos = sum(self.target_traded_pos_list)
 
     def subscribe(self, vt_symbol: str):
@@ -928,8 +952,17 @@ class FollowEngine(BaseEngine):
             return False
 
     def is_skip_contract_trade(self, trade: TradeData):
+        """"""
         if trade.vt_symbol in self.skip_contracts:
             self.write_log(f"{trade.vt_tradeid} 合约{trade.vt_symbol}禁止同步。")
+            return True
+        else:
+            return False
+
+    def is_to_follow_volume(self, trade: TradeData):
+        """"""
+        order = self.main_engine.get_order(trade.vt_orderid)
+        if order.volume in self.order_volumes_to_follow:
             return True
         else:
             return False
@@ -938,23 +971,27 @@ class FollowEngine(BaseEngine):
         """
         Filter trade from source gateway.
         """
-        # filter skip contract
-        if self.is_skip_contract_trade(trade):
+        # filter not follow order volume
+        if not self.is_to_follow_volume:
             return
 
-        # filter timeout trade
-        if self.is_timeout_trade(trade):
+        # filter skip contract
+        if self.is_skip_contract_trade(trade):
             return
 
         # filter followed trade push when restart app
         if self.is_followed_trade(trade):
             return
 
+        # filter timeout trade
+        if self.is_timeout_trade(trade):
+            return
+
         return trade
 
     def filter_target_not_follow(self, vt_orderid: str):
         """"""
-        if vt_orderid in self.must_done_orderids:
+        if vt_orderid in self.chase_orderids:
             return True
 
         for sub_list in self.tradeid_orderids_dict.values():
@@ -994,7 +1031,8 @@ class FollowEngine(BaseEngine):
         direction: Direction,
         price: float = 0,
         is_must_done: bool = False,
-        tick_add: Optional[int] = None
+        tick_add: Optional[int] = None,
+        base_price: OrderBasePrice = OrderBasePrice.GOOD_FOR_SELF
     ):
         """
         Make sure price is in limit-up and limit-down range.
@@ -1026,14 +1064,16 @@ class FollowEngine(BaseEngine):
 
         contract = self.main_engine.get_contract(vt_symbol)
         if direction == Direction.LONG:
-            price = ask_price if not price else price
+            if not price:
+                price = ask_price if base_price == OrderBasePrice.GOOD_FOR_OTHER else bid_price
             # If market price type or market price in manual order (when price is set to -1)
             if self.order_type == OrderType.MARKET or price == -1:
                 price = limit_price['limit_up']
             else:
                 price = min(limit_price['limit_up'], price + tick_add * contract.pricetick)
         else:
-            price = bid_price if not price else price
+            if not price:
+                price = bid_price if base_price == OrderBasePrice.GOOD_FOR_OTHER else ask_price
             if self.order_type == OrderType.MARKET or price == -1:
                 price = limit_price['limit_down']
             else:
@@ -1179,10 +1219,11 @@ class FollowEngine(BaseEngine):
                     continue
 
                 vt_orderids.append(vt_orderid)
-                self.must_done_order_dict[vt_orderid] = is_must_done
-                if is_must_done:
-                    self.must_done_orderids.add(vt_orderid)
-                    self.must_done_ancestor_dict[vt_orderid] = vt_orderid
+                # self.chase_order_dict[vt_orderid] = is_must_done
+                if is_must_done and self.is_chase_order:
+                    self.chase_orderids.add(vt_orderid)
+                    self.chase_ancestor_dict[vt_orderid] = vt_orderid
+                    self.chase_resend_count_dict[vt_orderid] = 0
                 self.offset_converter.update_order_request(splited_req, vt_orderid)
 
         return vt_orderids

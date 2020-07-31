@@ -76,7 +76,7 @@ class FollowManager(QtWidgets.QWidget):
 
         self.set_skip_button = QtWidgets.QPushButton("同步设置")
         self.set_skip_button.clicked.connect(self.set_skip_contracts)
-        self.set_skip_button.setEnabled(False)
+        # self.set_skip_button.setEnabled(False)
 
         self.close_hedged_pos_button = QtWidgets.QPushButton("锁仓单平仓")
         self.close_hedged_pos_button.clicked.connect(self.close_hedged_pos)
@@ -116,6 +116,9 @@ class FollowManager(QtWidgets.QWidget):
         self.follow_direction_combo = QtWidgets.QComboBox()
         self.follow_direction_combo.addItems(['正向跟随', '反向跟随'])
 
+        self.chase_combo = QtWidgets.QComboBox()
+        self.chase_combo.addItems(['是', '否'])
+
         validator = QtGui.QIntValidator()
         self.timeout_line = QtWidgets.QLineEdit(str(self.follow_engine.cancel_order_timeout))
         self.timeout_line.setValidator(validator)
@@ -146,6 +149,7 @@ class FollowManager(QtWidgets.QWidget):
         form.addRow("发单接口名", self.target_combo)
         form.addRow("发单类型", self.order_type_combo)
         form.addRow("跟单方向", self.follow_direction_combo)
+        form.addRow("是否追单", self.chase_combo)
         form.addRow("超时自动撤单（秒）", self.timeout_line)
         form.addRow("超时禁止跟单（秒）", self.follow_timeout_line)
         form.addRow("超价下单档位", self.tickout_line)
