@@ -377,7 +377,9 @@ class PosDeltaMonitor(BaseMonitor):
         "long_delta": {"display": "多仓差", "cell": BaseCell, "update": True},
         "short_delta": {"display": "空仓差", "cell": BaseCell, "update": True},
         "net_delta": {"display": "净仓差", "cell": PnlCell, "update": True},
-        "basic_delta": {"display": "底仓差", "cell": PnlCell, "update": True}
+        "basic_delta": {"display": "底仓差", "cell": PnlCell, "update": True},
+        "source_traded_net": {"display": "源日内净", "cell": PnlCell, "update": True},
+        "target_traded_net": {"display": "目标日内净", "cell": PnlCell, "update": True}
     }
 
     def init_ui(self):

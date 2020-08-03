@@ -51,6 +51,8 @@ class PosDeltaData:
     short_delta: int = 0
     net_delta: int = 0
     basic_delta: int = 0
+    source_traded_net: int = 0
+    target_traded_net: int = 0
 
 
 class FollowRunType(Enum):
@@ -147,7 +149,7 @@ class FollowEngine(BaseEngine):
 
         self.source_traded_net_pos = 0
         self.target_traded_net_pos = 0
-        self.target_traded_pos_list = []
+        self.target_traded_pos_dict = {}    # vt_symbol: list
         
         # Chase order variables
         # self.chase_order_dict = {}      # vt_orderid: bool
@@ -168,17 +170,23 @@ class FollowEngine(BaseEngine):
         self.offset_converter = OffsetConverter(main_engine)
 
         # If parameter is python object. It can not convert to json directly
-        self.parameters = ['source_gateway_name', 'target_gateway_name', 'filter_trade_timeout',
+        self.parameters = [
+                           'source_gateway_name', 'target_gateway_name', 'filter_trade_timeout',
                            'cancel_order_timeout', 'multiples', 'tick_add', 'inverse_follow',
                            'order_type', 'run_type',
                            'test_symbol', 'intraday_symbols',
                            'single_max',
-                           'single_max_dict']
+                           'single_max_dict'
+                           ]
 
         self.variables = ['tradeid_orderids_dict', 'positions']
         self.clear_variables = ['tradeid_orderids_dict']
-        self.pos_key = ['source_long', 'source_short', 'source_net',
-                        'target_long', 'target_short', 'target_net', 'net_delta', 'basic_delta']
+        self.pos_key = [
+                        'source_long', 'source_short', 'source_net',
+                        'target_long', 'target_short', 'target_net',
+                        'net_delta', 'basic_delta',
+                        'source_traded_net', 'target_traded_net'
+                        ]
 
         self.skip_contracts = []
 
@@ -627,7 +635,8 @@ class FollowEngine(BaseEngine):
                 else:
                     trades = self.split_trade_to_open_close(trade)
                     # update source traded net pos
-                    self.source_traded_net_pos += self.get_trade_net_vol(trade)
+                    self.update_source_traded_net(trade.vt_symbol, self.get_trade_net_vol(trade))
+                    # self.source_traded_net_pos += self.get_trade_net_vol(trade)
 
                 for trade_dict in trades:
                     trade = trade_dict['trade']
@@ -648,7 +657,9 @@ class FollowEngine(BaseEngine):
 
                 self.update_target_pos(trade)
                 if trade.vt_orderid in self.intraday_orderids:
-                    self.update_target_traded_net_pos(trade)
+                    self.add_target_traded(trade)
+                    self.refresh_target_traded_net_pos(trade.vt_symbl)
+                    # self.update_target_traded_net_pos(trade)
                 
         except:  # noqa
             msg = f"处理成交事件，触发异常：\n{traceback.format_exc()}"
@@ -833,6 +844,11 @@ class FollowEngine(BaseEngine):
                 self.positions.pop(symbol)
                 self.write_log(f"{symbol}已过期，清除成功。")
 
+    def get_symbol_pos(self, vt_symbl: str):
+        if self.positions.get(vt_symbol, None) is None:
+            self.init_symbol_pos(vt_symbol)
+        symbol_pos = self.positions[vt_symbol]
+        return symbol_pos
 
     def init_symbol_pos(self, vt_symbol: str):
         """
@@ -841,6 +857,14 @@ class FollowEngine(BaseEngine):
         self.positions[vt_symbol] = {}
         for pos_key in self.pos_key:
             self.positions[vt_symbol][pos_key] = 0
+
+    def update_source_traded_net(self, vt_symbol: str, delta_vol: int):
+        symbol_pos = self.get_symbol_pos(vt_symbl)
+        symbol_pos['source_traded_net'] += delta_vol
+
+    def update_target_traded_net(self, vt_symbl: str, delta_vol: int):
+        symbol_pos = self.get_symbol_pos(vt_symbl)
+        symbol_pos['target_traded_net'] += delta_vol
 
     def update_source_pos(self, position: PositionData):
         """
@@ -887,15 +911,24 @@ class FollowEngine(BaseEngine):
         self.put_pos_delta_event(vt_symbol)
         self.write_log(f"{vt_symbol}仓位更新成功")
 
-    def update_target_traded_net_pos(self, trade: TradeData):
-        """"""
-        vol = self.get_trade_net_vol(trade)
-        self.target_traded_pos_list.append(vol)
-        self.target_traded_net_pos = sum(self.target_traded_pos_list)
+    def get_target_traded_list(self, vt_symbl: str):
+        if self.target_traded_pos_dict.get(vt_symbol, None) is None:
+            self.target_traded_pos_dict[trade.vt_symbl] = []
+        traded_list = self.target_traded_pos_dict[trade.vt_symbl]
+        return traded_list
 
-    def refresh_target_traded_net_pos(self):
+    def add_target_traded(self, trade: TradeData):
         """"""
-        self.target_traded_net_pos = sum(self.target_traded_pos_list)
+        traded_list = self.get_target_traded_list(trade.vt_symbol)
+        vol = self.get_trade_net_vol(trade)
+        traded_list.append(vol)
+
+    def refresh_target_traded_net_pos(self, vt_symbl: str):
+        """"""
+        symbol_pos = self.get_symbol_pos(vt_symbl)
+        if symbol_pos:
+            traded_list = self.get_target_traded_list(vt_symbol)
+            symbol_pos['target_traded_net'] = sum(traded_list)
 
     def subscribe(self, vt_symbol: str):
         """
@@ -1108,12 +1141,17 @@ class FollowEngine(BaseEngine):
 
         # Check target traded net pos if intraday order is close order
         if (not self.is_base_pos_trading) and is_must_done:
-            if req.volume > abs(self.target_traded_net_pos):
-                req.volume = abs(self.target_traded_net_pos)
-                self.target_traded_net_pos = 0
+            target_traded_net = self.get_symbol_pos(trade.vt_symbl)['target_traded_net']
+            if not target_traded_net:
+                self.write_log(f"{trade.vt_symbl}目标户日内净仓为0，无需继续平仓")
+                return
             else:
-                vol = self.get_trade_net_vol(trade)
-                self.target_traded_net_pos += vol
+                if req.volume > abs(target_traded_net):
+                    req.volume = abs(target_traded_net)
+                    self.update_target_traded_net(trade.vt_symbl, -target_traded_net)
+                else:
+                    vol = self.get_trade_net_vol(trade)
+                    self.update_target_traded_net(trade.vt_symbl, vol)
 
         # T0 symbol use lock mode, redirect.
         if self.strip_digit(trade.vt_symbol) in self.intraday_symbols:
