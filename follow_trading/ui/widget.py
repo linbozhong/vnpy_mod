@@ -55,7 +55,7 @@ class FollowManager(QtWidgets.QWidget):
     def init_ui(self):
         """"""
         self.setWindowTitle(f"跟随交易 [{TRADER_DIR}]")
-        self.setMinimumSize(1060, 768)
+        self.setMinimumSize(1060, 800)
         self.setMaximumSize(1920, 1080)
 
         # create widgets
@@ -120,6 +120,18 @@ class FollowManager(QtWidgets.QWidget):
         self.chase_combo.addItems(['是', '否'])
 
         validator = QtGui.QIntValidator()
+        self.chase_timeout_line = QtWidgets.QLineEdit(str(self.follow_engine.chase_order_timeout))
+        self.chase_timeout_line.setValidator(validator)
+        self.chase_timeout_line.editingFinished.connect(self.set_chase_order_timeout)
+
+        self.chase_tickadd_line = QtWidgets.QLineEdit(str(self.follow_engine.chase_order_tick_add))
+        self.chase_tickadd_line.setValidator(validator)
+        self.chase_tickadd_line.editingFinished.connect(self.set_chase_order_tickadd)
+
+        self.chase_resend_line = QtWidgets.QLineEdit(str(self.follow_engine.chase_max_resend))
+        self.chase_resend_line.setValidator(validator)
+        self.chase_resend_line.editingFinished.connect(self.set_chase_max_resend)
+
         self.timeout_line = QtWidgets.QLineEdit(str(self.follow_engine.cancel_order_timeout))
         self.timeout_line.setValidator(validator)
         self.timeout_line.editingFinished.connect(self.set_cancel_order_timeout)
@@ -131,6 +143,10 @@ class FollowManager(QtWidgets.QWidget):
         self.tickout_line = QtWidgets.QLineEdit(str(self.follow_engine.tick_add))
         self.tickout_line.setValidator(validator)
         self.tickout_line.editingFinished.connect(self.set_tick_add)
+
+        self.mustdone_tickout_line = QtWidgets.QLineEdit(str(self.follow_engine.must_done_tick_add))
+        self.mustdone_tickout_line.setValidator(validator)
+        self.mustdone_tickout_line.editingFinished.connect(self.set_must_done_tick_add)
 
         self.multiples_line = QtWidgets.QLineEdit(str(self.follow_engine.multiples))
         self.multiples_line.setValidator(validator)
@@ -149,12 +165,15 @@ class FollowManager(QtWidgets.QWidget):
         form.addRow("发单接口名", self.target_combo)
         form.addRow("发单类型", self.order_type_combo)
         form.addRow("跟单方向", self.follow_direction_combo)
-        form.addRow("是否追单", self.chase_combo)
-        form.addRow("超时自动撤单（秒）", self.timeout_line)
-        form.addRow("超时禁止跟单（秒）", self.follow_timeout_line)
-        form.addRow("超价下单档位", self.tickout_line)
+        form.addRow("超时撤单（秒）", self.timeout_line)
+        form.addRow("超时禁跟（秒）", self.follow_timeout_line)
+        form.addRow("超价档位", self.tickout_line)
         form.addRow("跟随倍数", self.multiples_line)
         form.addRow("单笔最大手数", self.single_max_line)
+        form.addRow("是否追单", self.chase_combo)
+        form.addRow("追单超时", self.chase_timeout_line)
+        form.addRow("追单超价", self.chase_tickadd_line)
+        form.addRow("最大追单次数", self.chase_max_resend)
         form.addRow(self.start_button)
         form.addRow(self.stop_button)
 
@@ -205,6 +224,21 @@ class FollowManager(QtWidgets.QWidget):
             self.follow_engine.set_parameters('order_type', OrderType.MARKET)
         self.write_log(f"发单类型：{self.follow_engine.order_type.value} 切换成功")
 
+    def set_chase_order_timeout(self):
+        text = self.chase_timeout_line.text()
+        self.follow_engine.set_parameters('chase_order_timeout', int(text))
+        self.write_log(f"追价超时自动撤单：{self.follow_engine.chase_order_timeout} 秒设置成功")
+
+    def set_chase_order_tickadd(self):
+        text = self.chase_tickadd_line.text()
+        self.follow_engine.set_parameters('chase_order_tick_add', int(text))
+        self.write_log(f"追价超价档位：{self.follow_engine.chase_order_tickout} 设置成功")
+
+    def set_chase_max_resend(self):
+        text = self.chase_max_resend.text()
+        self.follow_engine.set_parameters('chase_max_resend', int(text))
+        self.write_log(f"最大追价次数：{self.follow_engine.chase_max_resend} 设置成功")
+
     def set_cancel_order_timeout(self):
         """"""
         text = self.timeout_line.text()
@@ -220,7 +254,12 @@ class FollowManager(QtWidgets.QWidget):
         """"""
         text = self.tickout_line.text()
         self.follow_engine.set_parameters('tick_add', int(text))
-        self.write_log(f"超价档位：{self.follow_engine.tick_add} 设置成功")
+        self.write_log(f"小超价档位：{self.follow_engine.tick_add} 设置成功")
+
+    def set_must_done_tick_add(self):
+        text = self.mustdone_tickout_line.text()
+        self.follow_engine.set_parameters('must_done_tick_add', int(text))
+        self.write_log(f"大超价档位：{self.follow_engine.must_done_tick_add} 设置成功")
 
     def set_multiples(self):
         """"""
@@ -629,8 +668,14 @@ class SkipContractEditor(QtWidgets.QDialog):
         self.intra_combo.activated[str].connect(self.set_removed_com)
         self.refresh_intra_list()
 
+        self.order_vol_combo = ComboBox()
+        self.order_vol_combo.pop_show.connect(self.refresh_order_vol_white_list)
+        self.order_vol_combo.activated[str].connect(self.set_removed_order_vol)
+        self.refresh_order_vol_white_list()
+
         self.new_remove_line = QtWidgets.QLineEdit()
         self.new_intra_line = QtWidgets.QLineEdit()
+        self.new_order_vol_line = QtWidgets.QLineEdit()
 
         button_add = QtWidgets.QPushButton("添加禁止同步")
         button_add.clicked.connect(self.add)
@@ -644,7 +689,19 @@ class SkipContractEditor(QtWidgets.QDialog):
         button_remove_com = QtWidgets.QPushButton("移除日内品种")
         button_remove_com.clicked.connect(self.remove_com)
 
-        for btn in [button_add, button_remove, button_add_com, button_remove_com]:
+        button_add_order_volume = QtWidgets.QPushButton("添加委托手数白名单")
+        button_add_order_volume.clicked.connect(self.add_order_volume)
+
+        button_remove_order_volume = QtWidgets.QPushButton("移除委托手数白名单")
+        button_remove_order_volume.clicked.connect(self.remove_order_volume)
+
+        big_btns = [
+            button_add, button_remove,
+            button_add_com, button_remove_com,
+            button_add_order_volume, button_remove_order_volume
+        ]
+
+        for btn in big_btns:
             btn.setFixedHeight(btn.sizeHint().height() * 1.5)
 
         form = QtWidgets.QFormLayout()
@@ -663,11 +720,21 @@ class SkipContractEditor(QtWidgets.QDialog):
         hbox_com.addWidget(button_add_com)
         hbox_com.addWidget(button_remove_com)
 
+        form_order_vol = QtWidgets.QFormLayout()
+        form_order_vol.addRow("允许跟单委托手数", self.order_vol_combo)
+        form_order_vol.addRow("添加新手数", self.new_order_vol_line)
+
+        hbox_order_vol = QtWidgets.QHBoxLayout()
+        hbox_order_vol.addWidget(button_add_order_volume)
+        hbox_order_vol.addWidget(button_remove_order_volume)
+
         vbox = QtWidgets.QVBoxLayout()
         vbox.addLayout(form)
-        vbox.addLayout(form_com)
         vbox.addLayout(hbox)
+        vbox.addLayout(form_com)
         vbox.addLayout(hbox_com)
+        vbox.addLayout(form_order_vol)
+        vbox.addLayout(hbox_order_vol)
 
         self.setLayout(vbox)
 
@@ -690,6 +757,9 @@ class SkipContractEditor(QtWidgets.QDialog):
         self.removed_com = commodity
         self.write_log(f"选中品种名{self.removed_com}")
 
+    def set_removed_order_vol(self, volume: int):
+        pass
+
     def refresh_symbol_list(self):
         """"""
         self.symbol_combo.clear()
@@ -700,6 +770,9 @@ class SkipContractEditor(QtWidgets.QDialog):
         self.intra_combo.clear()
         symbol_list = self.follow_engine.get_intraday_symbols()
         self.intra_combo.addItems(symbol_list)
+
+    def refresh_order_vol_white_list(self):
+        pass
 
     def add(self):
         """"""
@@ -749,6 +822,12 @@ class SkipContractEditor(QtWidgets.QDialog):
                 self.write_log(f"{commodity}从日内模式移除成功")
         else:
             self.write_log(f"品种尚未选择")
+
+    def add_order_volume(self):
+        pass
+
+    def remove_order_volume(self):
+        pass
 
     def write_log(self, msg: str):
         """"""

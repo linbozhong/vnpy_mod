@@ -171,12 +171,15 @@ class FollowEngine(BaseEngine):
 
         # If parameter is python object. It can not convert to json directly
         self.parameters = [
-                           'source_gateway_name', 'target_gateway_name', 'filter_trade_timeout',
-                           'cancel_order_timeout', 'multiples', 'tick_add', 'inverse_follow',
+                           'source_gateway_name', 'target_gateway_name',
+                           'filter_trade_timeout', 'cancel_order_timeout',
+                           'multiples',
+                           'tick_add', 'must_done_tick_add',
+                           'inverse_follow',
                            'order_type', 'run_type',
                            'test_symbol', 'intraday_symbols',
-                           'single_max',
-                           'single_max_dict'
+                           'single_max', 'single_max_dict',
+                           'chase_order_timeout', 'chase_order_tick_add'
                            ]
 
         self.variables = ['tradeid_orderids_dict', 'positions']
@@ -592,7 +595,7 @@ class FollowEngine(BaseEngine):
                 # If intraday order canceled, target net pos need refresh
                 if order.status == Status.CANCELLED:
                     if vt_orderid in self.intraday_orderids:
-                        self.refresh_target_traded_net_pos()
+                        self.refresh_target_traded_net_pos(order.vt_symbol)
                     
                     # resend order if need chase
                     if vt_orderid in self.chase_orderids:
@@ -658,7 +661,7 @@ class FollowEngine(BaseEngine):
                 self.update_target_pos(trade)
                 if trade.vt_orderid in self.intraday_orderids:
                     self.add_target_traded(trade)
-                    self.refresh_target_traded_net_pos(trade.vt_symbl)
+                    self.refresh_target_traded_net_pos(trade.vt_symbol)
                     # self.update_target_traded_net_pos(trade)
                 
         except:  # noqa
@@ -844,14 +847,14 @@ class FollowEngine(BaseEngine):
                 self.positions.pop(symbol)
                 self.write_log(f"{symbol}已过期，清除成功。")
 
-    def get_symbol_pos(self, vt_symbl: str):
+    def get_symbol_pos(self, vt_symbol: str):
         if self.positions.get(vt_symbol, None) is None:
             self.init_symbol_pos(vt_symbol)
         symbol_pos = self.positions[vt_symbol]
         return symbol_pos
 
     def init_symbol_pos(self, vt_symbol: str):
-        """
+        """o
         Create symbol pos dict.
         """
         self.positions[vt_symbol] = {}
@@ -859,7 +862,7 @@ class FollowEngine(BaseEngine):
             self.positions[vt_symbol][pos_key] = 0
 
     def update_source_traded_net(self, vt_symbol: str, delta_vol: int):
-        symbol_pos = self.get_symbol_pos(vt_symbl)
+        symbol_pos = self.get_symbol_pos(vt_symbol)
         symbol_pos['source_traded_net'] += delta_vol
 
     def update_target_traded_net(self, vt_symbl: str, delta_vol: int):
@@ -911,10 +914,10 @@ class FollowEngine(BaseEngine):
         self.put_pos_delta_event(vt_symbol)
         self.write_log(f"{vt_symbol}仓位更新成功")
 
-    def get_target_traded_list(self, vt_symbl: str):
+    def get_target_traded_list(self, vt_symbol: str):
         if self.target_traded_pos_dict.get(vt_symbol, None) is None:
-            self.target_traded_pos_dict[trade.vt_symbl] = []
-        traded_list = self.target_traded_pos_dict[trade.vt_symbl]
+            self.target_traded_pos_dict[vt_symbol] = []
+        traded_list = self.target_traded_pos_dict[vt_symbol]
         return traded_list
 
     def add_target_traded(self, trade: TradeData):
@@ -923,9 +926,9 @@ class FollowEngine(BaseEngine):
         vol = self.get_trade_net_vol(trade)
         traded_list.append(vol)
 
-    def refresh_target_traded_net_pos(self, vt_symbl: str):
+    def refresh_target_traded_net_pos(self, vt_symbol: str):
         """"""
-        symbol_pos = self.get_symbol_pos(vt_symbl)
+        symbol_pos = self.get_symbol_pos(vt_symbol)
         if symbol_pos:
             traded_list = self.get_target_traded_list(vt_symbol)
             symbol_pos['target_traded_net'] = sum(traded_list)
