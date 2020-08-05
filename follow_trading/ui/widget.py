@@ -113,6 +113,10 @@ class FollowManager(QtWidgets.QWidget):
         self.intraday_combo.pop_show.connect(self.refresh_intraday)
         self.refresh_intraday()
 
+        self.order_vol_combo = ComboBox()
+        self.order_vol_combo.pop_show.connect(self.refresh_order_vols)
+        self.refresh_order_vols()
+
         self.follow_direction_combo = QtWidgets.QComboBox()
         self.follow_direction_combo.addItems(['正向跟随', '反向跟随'])
 
@@ -173,7 +177,7 @@ class FollowManager(QtWidgets.QWidget):
         form.addRow("是否追单", self.chase_combo)
         form.addRow("追单超时", self.chase_timeout_line)
         form.addRow("追单超价", self.chase_tickadd_line)
-        form.addRow("最大追单次数", self.chase_max_resend)
+        form.addRow("最大追单次数", self.chase_resend_line)
         form.addRow(self.start_button)
         form.addRow(self.stop_button)
 
@@ -296,6 +300,11 @@ class FollowManager(QtWidgets.QWidget):
         symbol_list = self.follow_engine.get_intraday_symbols()
         self.intraday_combo.addItems(symbol_list)
 
+    def refresh_order_vols(self):
+        self.order_vol_combo.clear()
+        vol_list = self.follow_engine.get_order_vols_to_follow()
+        self.order_vol_combo.addItems(vol_list)
+
     def test_timer(self):
         """"""
         self.write_log("定时器测试")
@@ -407,17 +416,17 @@ class PosDeltaMonitor(BaseMonitor):
 
     headers = {
         "vt_symbol": {"display": "合约代码", "cell": BaseCell, "update": False},
-        "source_long": {"display": "源户多仓", "cell": BidCell, "update": True},
-        "source_short": {"display": "源户空仓", "cell": AskCell, "update": True},
-        "source_net": {"display": "源户净仓", "cell": PnlCell, "update": True},
-        "target_long": {"display": "目标多仓", "cell": BidCell, "update": True},
-        "target_short": {"display": "目标空仓", "cell": AskCell, "update": True},
-        "target_net": {"display": "目标净仓", "cell": PnlCell, "update": True},
-        "long_delta": {"display": "多仓差", "cell": BaseCell, "update": True},
-        "short_delta": {"display": "空仓差", "cell": BaseCell, "update": True},
-        "net_delta": {"display": "净仓差", "cell": PnlCell, "update": True},
+        "source_long": {"display": "源户多", "cell": BidCell, "update": True},
+        "source_short": {"display": "源户空", "cell": AskCell, "update": True},
+        "source_net": {"display": "源户净", "cell": PnlCell, "update": True},
+        "target_long": {"display": "目标多", "cell": BidCell, "update": True},
+        "target_short": {"display": "目标空", "cell": AskCell, "update": True},
+        "target_net": {"display": "目标净", "cell": PnlCell, "update": True},
+        "long_delta": {"display": "多差", "cell": BaseCell, "update": True},
+        "short_delta": {"display": "空差", "cell": BaseCell, "update": True},
+        "net_delta": {"display": "净差", "cell": PnlCell, "update": True},
         "basic_delta": {"display": "底仓差", "cell": PnlCell, "update": True},
-        "source_traded_net": {"display": "源日内净", "cell": PnlCell, "update": True},
+        "source_traded_net": {"display": "源户日内净", "cell": PnlCell, "update": True},
         "target_traded_net": {"display": "目标日内净", "cell": PnlCell, "update": True}
     }
 
@@ -758,7 +767,10 @@ class SkipContractEditor(QtWidgets.QDialog):
         self.write_log(f"选中品种名{self.removed_com}")
 
     def set_removed_order_vol(self, volume: int):
-        pass
+        """"""
+        self.new_order_vol_line.setText(str(volume))
+        self.removed_vol = volume
+        self.write_log(f"选中委托手数{self.removed_vol}")
 
     def refresh_symbol_list(self):
         """"""
@@ -772,7 +784,9 @@ class SkipContractEditor(QtWidgets.QDialog):
         self.intra_combo.addItems(symbol_list)
 
     def refresh_order_vol_white_list(self):
-        pass
+        self.order_vol_combo.clear()
+        vol_list = self.follow_engine.get_order_vols_to_follow()
+        self.order_vol_combo.addItems(vol_list)
 
     def add(self):
         """"""
@@ -824,10 +838,26 @@ class SkipContractEditor(QtWidgets.QDialog):
             self.write_log(f"品种尚未选择")
 
     def add_order_volume(self):
-        pass
+        vol = self.new_order_vol_line.text()
+        if int(vol) not in self.follow_engine.get_order_vols_to_follow():
+            self.follow_engine.get_order_vols_to_follow().append(int(vol))
+            self.refresh_order_vol_white_list()
+            self.parent.refresh_order_vols()
+            self.write_log(f"委托手数：{vol}添加到跟单手数成功")
+        else:
+            self.write_log(f"委托手数：{vol}无需重复添加")
 
     def remove_order_volume(self):
-        pass
+        order_vol = self.remove_order_volume
+        if order_vol:
+            vol_list = self.follow_engine.get_order_vols_to_follow()
+            if order_vol in vol_list:
+                vol_list.remove(order_vol)
+                self.refresh_order_vol_white_list()
+                self.parent.refresh_order_vols()
+                self.write_log(f"{order_vol}从跟单委托手数移除成功")
+        else:
+            self.write_log(f"手数尚未选择")
 
     def write_log(self, msg: str):
         """"""

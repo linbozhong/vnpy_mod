@@ -282,6 +282,9 @@ class FollowEngine(BaseEngine):
         """"""
         return self.intraday_symbols
 
+    def get_order_vols_to_follow(self):
+        return self.order_volumes_to_follow
+
     def load_follow_setting(self):
         """
         Load setting from setting file.
