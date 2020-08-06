@@ -117,6 +117,8 @@ class FollowEngine(BaseEngine):
             "IH": 20
         }
 
+        self.is_intraday_trading = True
+
         # Test Mod
         self.run_type = FollowRunType.LIVE
         self.test_symbol = 'rb2001.SHFE'
@@ -143,9 +145,6 @@ class FollowEngine(BaseEngine):
         self.is_hedged_closed = False
 
         self.is_trade_saved = False
-
-        # Intraday trade variables
-        self.is_base_pos_trading = False
 
         self.source_traded_net_pos = 0
         self.target_traded_net_pos = 0
@@ -179,11 +178,12 @@ class FollowEngine(BaseEngine):
                            'order_type', 'run_type',
                            'test_symbol', 'intraday_symbols',
                            'single_max', 'single_max_dict',
-                           'chase_order_timeout', 'chase_order_tick_add'
+                           'is_chase_order', 'chase_order_timeout', 'chase_order_tick_add',
+                           'is_intraday_trading'
                            ]
 
-        self.variables = ['tradeid_orderids_dict', 'positions']
-        self.clear_variables = ['tradeid_orderids_dict']
+        self.variables = ['tradeid_orderids_dict', 'positions', 'target_traded_pos_dict']
+        self.clear_variables = ['tradeid_orderids_dict', 'target_traded_pos_dict']
         self.pos_key = [
                         'source_long', 'source_short', 'source_net',
                         'target_long', 'target_short', 'target_net',
@@ -616,7 +616,6 @@ class FollowEngine(BaseEngine):
         """"""
         try:
             trade = event.data
-            # self.write_log(f"{trade.vt_tradeid} 成交信号已获取。")
 
             # Filter duplicate trade push if reconnect gateway for disconnected reason.
             if trade.vt_tradeid in self.vt_tradeids:
@@ -625,17 +624,19 @@ class FollowEngine(BaseEngine):
             else:
                 self.vt_tradeids.add(trade.vt_tradeid)
 
-            if not self.is_active:
-                self.write_log(f"{trade.vt_tradeid}不跟随，系统尚未启动。")
-                return
-
             if trade.gateway_name == self.source_gateway_name:
+                # update source position anyhow
+                self.update_source_pos_by_trade(trade)
+
                 # validate source trade
+                if not self.is_active:
+                    self.write_log(f"{trade.vt_tradeid}不跟随，系统尚未启动。")
+                    return
                 if not self.filter_source_trade(trade):
                     return
 
                 # split trade to open or close
-                if self.is_base_pos_trading:
+                if not self.is_intraday_trading:
                     trade_dict = self.get_trade_dict(trade, True)
                     trades = [trade_dict]
                 else:
@@ -662,10 +663,15 @@ class FollowEngine(BaseEngine):
                     return
 
                 self.update_target_pos(trade)
+
                 if trade.vt_orderid in self.intraday_orderids:
                     self.add_target_traded(trade)
                     self.refresh_target_traded_net_pos(trade.vt_symbol)
                     # self.update_target_traded_net_pos(trade)
+
+                self.save_follow_data()
+                self.put_pos_delta_event(trade.vt_symbol)
+                self.write_log(f"{trade.vt_symbol}仓位更新成功")
                 
         except:  # noqa
             msg = f"处理成交事件，触发异常：\n{traceback.format_exc()}"
@@ -696,6 +702,7 @@ class FollowEngine(BaseEngine):
                 self.update_source_pos(position)
             else:
                 self.offset_converter.update_position(position)
+                self.update_target_pos_by_pos(position)
         except:  # noqa
             msg = f"处理持仓事件，触发异常：\n{traceback.format_exc()}"
             self.write_log(msg)
@@ -892,6 +899,19 @@ class FollowEngine(BaseEngine):
             symbol_pos['source_net'] = symbol_pos['source_long'] - symbol_pos['source_short']
             symbol_pos['net_delta'] = symbol_pos['source_net'] * self.multiples - symbol_pos['target_net']
 
+    def update_source_pos_by_trade(self, trade: TradeData):
+        """"""
+        symbol_pos = self.get_symbol_pos(trade.vt_symbol)
+        trade_type = self.get_trade_type(trade)
+        if trade_type == TradeType.BUY:
+            symbol_pos['source_long'] += trade.volume
+        elif trade_type == TradeType.SHORT:
+            symbol_pos['source_short'] += trade.volume
+        elif trade_type == TradeType.SELL:
+            symbol_pos['source_long'] -= trade.volume
+        else:
+            symbol_pos['source_short'] -= trade.volume
+
     def update_target_pos(self, trade: TradeData):
         """
         Update pos in target gateway
@@ -913,9 +933,19 @@ class FollowEngine(BaseEngine):
         symbol_pos['target_net'] = symbol_pos['target_long'] - symbol_pos['target_short']
         symbol_pos['net_delta'] = symbol_pos['source_net'] * self.multiples - symbol_pos['target_net']
 
-        self.save_follow_data()
-        self.put_pos_delta_event(vt_symbol)
-        self.write_log(f"{vt_symbol}仓位更新成功")
+    def update_target_pos_by_pos(self, position: PositionData):
+        """"""
+        if position.direction == Direction.NET:
+            return
+
+        symbol_pos = self.get_symbol_pos(position.vt_symbol)
+        if position.direction == Direction.LONG:
+            symbol_pos['source_long'] = position.volume
+        else:
+            symbol_pos['source_short'] = position.volume
+
+        symbol_pos['target_net'] = symbol_pos['target_long'] - symbol_pos['target_short']
+        symbol_pos['net_delta'] = symbol_pos['source_net'] * self.multiples - symbol_pos['target_net']
 
     def get_target_traded_list(self, vt_symbol: str):
         if self.target_traded_pos_dict.get(vt_symbol, None) is None:
@@ -1004,6 +1034,7 @@ class FollowEngine(BaseEngine):
         if order.volume in self.order_volumes_to_follow:
             return True
         else:
+            self.write_log(f"{order.vt_orderid}手数{order.volume}不符合跟单规则。")
             return False
 
     def filter_source_trade(self, trade: TradeData):
@@ -1011,7 +1042,7 @@ class FollowEngine(BaseEngine):
         Filter trade from source gateway.
         """
         # filter not follow order volume
-        if not self.is_to_follow_volume:
+        if not self.is_to_follow_volume(trade):
             return
 
         # filter skip contract
@@ -1146,7 +1177,7 @@ class FollowEngine(BaseEngine):
             req = self.inverse_req(req)
 
         # Check target traded net pos if intraday order is close order
-        if (not self.is_base_pos_trading) and is_must_done:
+        if self.is_intraday_trading and is_must_done:
             target_traded_net = self.get_symbol_pos(trade.vt_symbl)['target_traded_net']
             if not target_traded_net:
                 self.write_log(f"{trade.vt_symbl}目标户日内净仓为0，无需继续平仓")
@@ -1232,7 +1263,7 @@ class FollowEngine(BaseEngine):
                 order_prefix = "底仓单"
             else:
                 order_prefix = "跟随单"
-                if not self.is_base_pos_trading:
+                if self.is_intraday_trading:
                     self.intraday_orderids.update(vt_orderids)
 
             self.write_log(f"{order_prefix} {vt_tradeid}发单成功，委托号：{'  '.join(vt_orderids)}。")

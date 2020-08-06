@@ -55,7 +55,7 @@ class FollowManager(QtWidgets.QWidget):
     def init_ui(self):
         """"""
         self.setWindowTitle(f"跟随交易 [{TRADER_DIR}]")
-        self.setMinimumSize(1060, 800)
+        self.setMinimumSize(1100, 860)
         self.setMaximumSize(1920, 1080)
 
         # create widgets
@@ -104,6 +104,7 @@ class FollowManager(QtWidgets.QWidget):
         self.order_type_combo = QtWidgets.QComboBox()
         self.order_type_combo.addItems(['限价', '市价'])
         self.order_type_combo.activated[str].connect(self.set_order_type)
+        self.get_current_order_type()
 
         self.skip_contracts_combo = ComboBox()
         self.skip_contracts_combo.pop_show.connect(self.refresh_skip_contracts)
@@ -119,9 +120,18 @@ class FollowManager(QtWidgets.QWidget):
 
         self.follow_direction_combo = QtWidgets.QComboBox()
         self.follow_direction_combo.addItems(['正向跟随', '反向跟随'])
+        self.follow_direction_combo.activated[str].connect(self.set_follow_direction)
+        self.get_current_follow_direction()
 
         self.chase_combo = QtWidgets.QComboBox()
         self.chase_combo.addItems(['是', '否'])
+        self.chase_combo.activated[str].connect(self.set_is_chase)
+        self.get_current_chase()
+
+        self.intraday_trading_combo = QtWidgets.QComboBox()
+        self.intraday_trading_combo.addItems(['是', '否'])
+        self.intraday_trading_combo.activated[str].connect(self.set_is_intraday_trading)
+        self.get_current_intraday_trading()
 
         validator = QtGui.QIntValidator()
         self.chase_timeout_line = QtWidgets.QLineEdit(str(self.follow_engine.chase_order_timeout))
@@ -178,12 +188,14 @@ class FollowManager(QtWidgets.QWidget):
         form.addRow("追单超时", self.chase_timeout_line)
         form.addRow("追单超价", self.chase_tickadd_line)
         form.addRow("最大追单次数", self.chase_resend_line)
+        form.addRow("是否日内交易", self.intraday_trading_combo)
         form.addRow(self.start_button)
         form.addRow(self.stop_button)
 
         form_action = QtWidgets.QFormLayout()
         form_action.addRow("日内模式品种", self.intraday_combo)
         form_action.addRow("禁止同步合约", self.skip_contracts_combo)
+        form_action.addRow("跟单委托手数", self.order_vol_combo)
         form_action.addRow(self.modify_pos_button)
         form_action.addRow(self.set_skip_button)
         form_action.addRow(self.sync_pos_button)
@@ -226,19 +238,75 @@ class FollowManager(QtWidgets.QWidget):
             self.follow_engine.set_parameters('order_type', OrderType.LIMIT)
         else:
             self.follow_engine.set_parameters('order_type', OrderType.MARKET)
-        self.write_log(f"发单类型：{self.follow_engine.order_type.value} 切换成功")
+        self.write_log(f"发单类型：{self.follow_engine.order_type.value} 设置成功")
+
+    def set_follow_direction(self, follow_direction: str):
+        """"""
+        if follow_direction == "正向跟随":
+            self.follow_engine.set_parameters('inverse_follow', False)
+        else:
+            self.follow_engine.set_parameters('inverse_follow', True)
+        self.write_log(f"是否反向跟单：{self.follow_engine.inverse_follow} 设置成功")
+
+    def set_is_chase(self, chase_flag: str):
+        """"""
+        if chase_flag == "是":
+            self.follow_engine.set_parameters('is_chase_order', True)
+        else:
+            self.follow_engine.set_parameters('is_chase_order', False)
+        self.write_log(f"是否追单：{self.follow_engine.is_chase_order}")
+
+    def set_is_intraday_trading(self, intraday_flag: str):
+        """"""
+        if intraday_flag == "是":
+            self.follow_engine.set_parameters('is_intraday_trading', True)
+        else:
+            self.follow_engine.set_parameters('is_intraday_trading', False)
+        self.write_log(f"是否日内交易：{self.follow_engine.is_intraday_trading}")
+
+    def get_current_order_type(self):
+        """"""
+        order_type = self.follow_engine.order_type
+        self.order_type_combo.setCurrentText(order_type.value)
+
+    def get_current_follow_direction(self):
+        """"""
+        inverse_follow = self.follow_engine.inverse_follow
+        if not inverse_follow:
+            self.follow_direction_combo.setCurrentIndex(0)
+        else:
+            self.follow_direction_combo.setCurrentIndex(1)
+
+    def get_current_chase(self):
+        """"""
+        is_chase_order = self.follow_engine.is_chase_order
+        if is_chase_order:
+            self.chase_combo.setCurrentIndex(0)
+        else:
+            self.chase_combo.setCurrentIndex(1)
+
+    def get_current_intraday_trading(self):
+        """"""
+        is_intraday_trading = self.follow_engine.is_intraday_trading
+        if is_intraday_trading:
+            self.chase_combo.setCurrentIndex(0)
+        else:
+            self.chase_combo.setCurrentIndex(1)
 
     def set_chase_order_timeout(self):
+        """"""
         text = self.chase_timeout_line.text()
         self.follow_engine.set_parameters('chase_order_timeout', int(text))
         self.write_log(f"追价超时自动撤单：{self.follow_engine.chase_order_timeout} 秒设置成功")
 
     def set_chase_order_tickadd(self):
+        """"""
         text = self.chase_tickadd_line.text()
         self.follow_engine.set_parameters('chase_order_tick_add', int(text))
         self.write_log(f"追价超价档位：{self.follow_engine.chase_order_tickout} 设置成功")
 
     def set_chase_max_resend(self):
+        """"""
         text = self.chase_max_resend.text()
         self.follow_engine.set_parameters('chase_max_resend', int(text))
         self.write_log(f"最大追价次数：{self.follow_engine.chase_max_resend} 设置成功")
@@ -303,7 +371,8 @@ class FollowManager(QtWidgets.QWidget):
     def refresh_order_vols(self):
         self.order_vol_combo.clear()
         vol_list = self.follow_engine.get_order_vols_to_follow()
-        self.order_vol_combo.addItems(vol_list)
+        vol_str_list = [str(vol) for vol in vol_list]
+        self.order_vol_combo.addItems(vol_str_list)
 
     def test_timer(self):
         """"""
@@ -660,6 +729,7 @@ class SkipContractEditor(QtWidgets.QDialog):
         self.follow_engine = follow_engine
         self.removed_symbol = ''
         self.removed_com = ''
+        self.removed_vol = 0
 
         self.init_ui()
 
@@ -698,10 +768,10 @@ class SkipContractEditor(QtWidgets.QDialog):
         button_remove_com = QtWidgets.QPushButton("移除日内品种")
         button_remove_com.clicked.connect(self.remove_com)
 
-        button_add_order_volume = QtWidgets.QPushButton("添加委托手数白名单")
+        button_add_order_volume = QtWidgets.QPushButton("添加委托手数")
         button_add_order_volume.clicked.connect(self.add_order_volume)
 
-        button_remove_order_volume = QtWidgets.QPushButton("移除委托手数白名单")
+        button_remove_order_volume = QtWidgets.QPushButton("移除委托手数")
         button_remove_order_volume.clicked.connect(self.remove_order_volume)
 
         big_btns = [
@@ -766,10 +836,10 @@ class SkipContractEditor(QtWidgets.QDialog):
         self.removed_com = commodity
         self.write_log(f"选中品种名{self.removed_com}")
 
-    def set_removed_order_vol(self, volume: int):
+    def set_removed_order_vol(self, volume: str):
         """"""
-        self.new_order_vol_line.setText(str(volume))
-        self.removed_vol = volume
+        self.new_order_vol_line.setText(volume)
+        self.removed_vol = int(volume)
         self.write_log(f"选中委托手数{self.removed_vol}")
 
     def refresh_symbol_list(self):
@@ -786,7 +856,8 @@ class SkipContractEditor(QtWidgets.QDialog):
     def refresh_order_vol_white_list(self):
         self.order_vol_combo.clear()
         vol_list = self.follow_engine.get_order_vols_to_follow()
-        self.order_vol_combo.addItems(vol_list)
+        vol_str_list = [str(vol) for vol in vol_list]
+        self.order_vol_combo.addItems(vol_str_list)
 
     def add(self):
         """"""
@@ -844,11 +915,12 @@ class SkipContractEditor(QtWidgets.QDialog):
             self.refresh_order_vol_white_list()
             self.parent.refresh_order_vols()
             self.write_log(f"委托手数：{vol}添加到跟单手数成功")
+            print(self.follow_engine.get_order_vols_to_follow())
         else:
             self.write_log(f"委托手数：{vol}无需重复添加")
 
     def remove_order_volume(self):
-        order_vol = self.remove_order_volume
+        order_vol = self.removed_vol
         if order_vol:
             vol_list = self.follow_engine.get_order_vols_to_follow()
             if order_vol in vol_list:
@@ -856,6 +928,7 @@ class SkipContractEditor(QtWidgets.QDialog):
                 self.refresh_order_vol_white_list()
                 self.parent.refresh_order_vols()
                 self.write_log(f"{order_vol}从跟单委托手数移除成功")
+                print(self.follow_engine.get_order_vols_to_follow())
         else:
             self.write_log(f"手数尚未选择")
 
