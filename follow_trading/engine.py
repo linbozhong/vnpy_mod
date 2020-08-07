@@ -627,6 +627,7 @@ class FollowEngine(BaseEngine):
             if trade.gateway_name == self.source_gateway_name:
                 # update source position anyhow
                 self.update_source_pos_by_trade(trade)
+                self.put_pos_delta_event(trade.vt_symbol)
 
                 # validate source trade
                 if not self.is_active:
@@ -683,7 +684,7 @@ class FollowEngine(BaseEngine):
             self.send_queue_order()
             self.cancel_timeout_order()
             # self.view_test_variables()
-            self.refresh_pos()
+            # self.refresh_pos()
             self.auto_save_trade()
         except:  # noqa
             msg = f"处理定时事件，触发异常：\n{traceback.format_exc()}"
@@ -703,6 +704,8 @@ class FollowEngine(BaseEngine):
             else:
                 self.offset_converter.update_position(position)
                 self.update_target_pos_by_pos(position)
+
+            self.put_pos_delta_event(position.vt_symbol)
         except:  # noqa
             msg = f"处理持仓事件，触发异常：\n{traceback.format_exc()}"
             self.write_log(msg)
@@ -864,7 +867,7 @@ class FollowEngine(BaseEngine):
         return symbol_pos
 
     def init_symbol_pos(self, vt_symbol: str):
-        """o
+        """
         Create symbol pos dict.
         """
         self.positions[vt_symbol] = {}
@@ -912,6 +915,10 @@ class FollowEngine(BaseEngine):
         else:
             symbol_pos['source_short'] -= trade.volume
 
+        symbol_pos['source_net'] = symbol_pos['source_long'] - symbol_pos['source_short']
+        symbol_pos['net_delta'] = symbol_pos['source_net'] * self.multiples - symbol_pos['target_net']
+
+
     def update_target_pos(self, trade: TradeData):
         """
         Update pos in target gateway
@@ -930,6 +937,7 @@ class FollowEngine(BaseEngine):
             symbol_pos['target_long'] -= trade.volume
         else:
             symbol_pos['target_short'] -= trade.volume
+
         symbol_pos['target_net'] = symbol_pos['target_long'] - symbol_pos['target_short']
         symbol_pos['net_delta'] = symbol_pos['source_net'] * self.multiples - symbol_pos['target_net']
 

@@ -55,7 +55,7 @@ class FollowManager(QtWidgets.QWidget):
     def init_ui(self):
         """"""
         self.setWindowTitle(f"跟随交易 [{TRADER_DIR}]")
-        self.setMinimumSize(1100, 860)
+        self.setMinimumSize(960, 750)
         self.setMaximumSize(1920, 1080)
 
         # create widgets
@@ -72,11 +72,12 @@ class FollowManager(QtWidgets.QWidget):
 
         self.modify_pos_button = QtWidgets.QPushButton("修改仓位")
         self.modify_pos_button.clicked.connect(self.manual_modify_pos)
-        # self.modify_pos_button.setEnabled(False)
 
         self.set_skip_button = QtWidgets.QPushButton("同步设置")
         self.set_skip_button.clicked.connect(self.set_skip_contracts)
-        # self.set_skip_button.setEnabled(False)
+
+        self.set_order_button = QtWidgets.QPushButton("委托设置")
+        self.set_order_button.clicked.connect(self.set_order_setting)
 
         self.close_hedged_pos_button = QtWidgets.QPushButton("锁仓单平仓")
         self.close_hedged_pos_button.clicked.connect(self.close_hedged_pos)
@@ -87,6 +88,7 @@ class FollowManager(QtWidgets.QWidget):
                     self.sync_pos_button,
                     self.modify_pos_button,
                     self.set_skip_button,
+                    self.set_order_button,
                     self.close_hedged_pos_button]:
             btn.setFixedHeight(btn.sizeHint().height() * 2)
 
@@ -100,11 +102,6 @@ class FollowManager(QtWidgets.QWidget):
         self.target_combo = ComboBox()
         self.target_combo.addItems(gateways)
         self.target_combo.pop_show.connect(self.refresh_gateway_name)
-
-        self.order_type_combo = QtWidgets.QComboBox()
-        self.order_type_combo.addItems(['限价', '市价'])
-        self.order_type_combo.activated[str].connect(self.set_order_type)
-        self.get_current_order_type()
 
         self.skip_contracts_combo = ComboBox()
         self.skip_contracts_combo.pop_show.connect(self.refresh_skip_contracts)
@@ -123,52 +120,20 @@ class FollowManager(QtWidgets.QWidget):
         self.follow_direction_combo.activated[str].connect(self.set_follow_direction)
         self.get_current_follow_direction()
 
-        self.chase_combo = QtWidgets.QComboBox()
-        self.chase_combo.addItems(['是', '否'])
-        self.chase_combo.activated[str].connect(self.set_is_chase)
-        self.get_current_chase()
-
         self.intraday_trading_combo = QtWidgets.QComboBox()
         self.intraday_trading_combo.addItems(['是', '否'])
         self.intraday_trading_combo.activated[str].connect(self.set_is_intraday_trading)
         self.get_current_intraday_trading()
 
         validator = QtGui.QIntValidator()
-        self.chase_timeout_line = QtWidgets.QLineEdit(str(self.follow_engine.chase_order_timeout))
-        self.chase_timeout_line.setValidator(validator)
-        self.chase_timeout_line.editingFinished.connect(self.set_chase_order_timeout)
-
-        self.chase_tickadd_line = QtWidgets.QLineEdit(str(self.follow_engine.chase_order_tick_add))
-        self.chase_tickadd_line.setValidator(validator)
-        self.chase_tickadd_line.editingFinished.connect(self.set_chase_order_tickadd)
-
-        self.chase_resend_line = QtWidgets.QLineEdit(str(self.follow_engine.chase_max_resend))
-        self.chase_resend_line.setValidator(validator)
-        self.chase_resend_line.editingFinished.connect(self.set_chase_max_resend)
-
-        self.timeout_line = QtWidgets.QLineEdit(str(self.follow_engine.cancel_order_timeout))
-        self.timeout_line.setValidator(validator)
-        self.timeout_line.editingFinished.connect(self.set_cancel_order_timeout)
 
         self.follow_timeout_line = QtWidgets.QLineEdit(str(self.follow_engine.filter_trade_timeout))
         self.follow_timeout_line.setValidator(validator)
         self.follow_timeout_line.editingFinished.connect(self.set_follow_timeout)
 
-        self.tickout_line = QtWidgets.QLineEdit(str(self.follow_engine.tick_add))
-        self.tickout_line.setValidator(validator)
-        self.tickout_line.editingFinished.connect(self.set_tick_add)
-
-        self.mustdone_tickout_line = QtWidgets.QLineEdit(str(self.follow_engine.must_done_tick_add))
-        self.mustdone_tickout_line.setValidator(validator)
-        self.mustdone_tickout_line.editingFinished.connect(self.set_must_done_tick_add)
-
         self.multiples_line = QtWidgets.QLineEdit(str(self.follow_engine.multiples))
         self.multiples_line.setValidator(validator)
         self.multiples_line.editingFinished.connect(self.set_multiples)
-
-        self.single_max_line = QtWidgets.QLineEdit(str(self.follow_engine.single_max))
-        self.single_max_line.setValidator(validator)
-        self.single_max_line.editingFinished.connect(self.set_single_max)
 
         self.pos_delta_monitor = PosDeltaMonitor(self.main_engine, self.event_engine)
         self.log_monitor = LogMonitor(self.main_engine, self.event_engine)
@@ -177,17 +142,9 @@ class FollowManager(QtWidgets.QWidget):
         form = QtWidgets.QFormLayout()
         form.addRow("跟随接口名", self.source_combo)
         form.addRow("发单接口名", self.target_combo)
-        form.addRow("发单类型", self.order_type_combo)
         form.addRow("跟单方向", self.follow_direction_combo)
-        form.addRow("超时撤单（秒）", self.timeout_line)
         form.addRow("超时禁跟（秒）", self.follow_timeout_line)
-        form.addRow("超价档位", self.tickout_line)
         form.addRow("跟随倍数", self.multiples_line)
-        form.addRow("单笔最大手数", self.single_max_line)
-        form.addRow("是否追单", self.chase_combo)
-        form.addRow("追单超时", self.chase_timeout_line)
-        form.addRow("追单超价", self.chase_tickadd_line)
-        form.addRow("最大追单次数", self.chase_resend_line)
         form.addRow("是否日内交易", self.intraday_trading_combo)
         form.addRow(self.start_button)
         form.addRow(self.stop_button)
@@ -198,6 +155,7 @@ class FollowManager(QtWidgets.QWidget):
         form_action.addRow("跟单委托手数", self.order_vol_combo)
         form_action.addRow(self.modify_pos_button)
         form_action.addRow(self.set_skip_button)
+        form_action.addRow(self.set_order_button)
         form_action.addRow(self.sync_pos_button)
         form_action.addRow(self.close_hedged_pos_button)
 
@@ -232,14 +190,6 @@ class FollowManager(QtWidgets.QWidget):
         self.sync_symbol = vt_symbol
         self.write_log(f"选中合约{self.sync_symbol}")
 
-    def set_order_type(self, order_type: str):
-        """"""
-        if order_type == "限价":
-            self.follow_engine.set_parameters('order_type', OrderType.LIMIT)
-        else:
-            self.follow_engine.set_parameters('order_type', OrderType.MARKET)
-        self.write_log(f"发单类型：{self.follow_engine.order_type.value} 设置成功")
-
     def set_follow_direction(self, follow_direction: str):
         """"""
         if follow_direction == "正向跟随":
@@ -247,14 +197,6 @@ class FollowManager(QtWidgets.QWidget):
         else:
             self.follow_engine.set_parameters('inverse_follow', True)
         self.write_log(f"是否反向跟单：{self.follow_engine.inverse_follow} 设置成功")
-
-    def set_is_chase(self, chase_flag: str):
-        """"""
-        if chase_flag == "是":
-            self.follow_engine.set_parameters('is_chase_order', True)
-        else:
-            self.follow_engine.set_parameters('is_chase_order', False)
-        self.write_log(f"是否追单：{self.follow_engine.is_chase_order}")
 
     def set_is_intraday_trading(self, intraday_flag: str):
         """"""
@@ -264,11 +206,6 @@ class FollowManager(QtWidgets.QWidget):
             self.follow_engine.set_parameters('is_intraday_trading', False)
         self.write_log(f"是否日内交易：{self.follow_engine.is_intraday_trading}")
 
-    def get_current_order_type(self):
-        """"""
-        order_type = self.follow_engine.order_type
-        self.order_type_combo.setCurrentText(order_type.value)
-
     def get_current_follow_direction(self):
         """"""
         inverse_follow = self.follow_engine.inverse_follow
@@ -277,73 +214,24 @@ class FollowManager(QtWidgets.QWidget):
         else:
             self.follow_direction_combo.setCurrentIndex(1)
 
-    def get_current_chase(self):
-        """"""
-        is_chase_order = self.follow_engine.is_chase_order
-        if is_chase_order:
-            self.chase_combo.setCurrentIndex(0)
-        else:
-            self.chase_combo.setCurrentIndex(1)
-
     def get_current_intraday_trading(self):
         """"""
         is_intraday_trading = self.follow_engine.is_intraday_trading
         if is_intraday_trading:
-            self.chase_combo.setCurrentIndex(0)
+            self.intraday_trading_combo.setCurrentIndex(0)
         else:
-            self.chase_combo.setCurrentIndex(1)
-
-    def set_chase_order_timeout(self):
-        """"""
-        text = self.chase_timeout_line.text()
-        self.follow_engine.set_parameters('chase_order_timeout', int(text))
-        self.write_log(f"追价超时自动撤单：{self.follow_engine.chase_order_timeout} 秒设置成功")
-
-    def set_chase_order_tickadd(self):
-        """"""
-        text = self.chase_tickadd_line.text()
-        self.follow_engine.set_parameters('chase_order_tick_add', int(text))
-        self.write_log(f"追价超价档位：{self.follow_engine.chase_order_tickout} 设置成功")
-
-    def set_chase_max_resend(self):
-        """"""
-        text = self.chase_max_resend.text()
-        self.follow_engine.set_parameters('chase_max_resend', int(text))
-        self.write_log(f"最大追价次数：{self.follow_engine.chase_max_resend} 设置成功")
-
-    def set_cancel_order_timeout(self):
-        """"""
-        text = self.timeout_line.text()
-        self.follow_engine.set_parameters('cancel_order_timeout', int(text))
-        self.write_log(f"未成交自动撤单超时：{self.follow_engine.cancel_order_timeout} 秒设置成功")
+            self.intraday_trading_combo.setCurrentIndex(1)
 
     def set_follow_timeout(self):
         text = self.follow_timeout_line.text()
         self.follow_engine.set_parameters('filter_trade_timeout', int(text))
         self.write_log(f"成交单超时：{self.follow_engine.filter_trade_timeout} 秒设置成功")
 
-    def set_tick_add(self):
-        """"""
-        text = self.tickout_line.text()
-        self.follow_engine.set_parameters('tick_add', int(text))
-        self.write_log(f"小超价档位：{self.follow_engine.tick_add} 设置成功")
-
-    def set_must_done_tick_add(self):
-        text = self.mustdone_tickout_line.text()
-        self.follow_engine.set_parameters('must_done_tick_add', int(text))
-        self.write_log(f"大超价档位：{self.follow_engine.must_done_tick_add} 设置成功")
-
     def set_multiples(self):
         """"""
         text = self.multiples_line.text()
         self.follow_engine.set_parameters('multiples', int(text))
         self.write_log(f"跟随倍数：{self.follow_engine.multiples} 设置成功")
-
-    def set_single_max(self):
-        """"""
-        text = self.single_max_line.text()
-        self.follow_engine.set_parameters('single_max', int(text))
-        self.write_log(f"单笔最大手数：{self.follow_engine.single_max} 设置成功")
 
     def refresh_gateway_name(self):
         """"""
@@ -398,18 +286,18 @@ class FollowManager(QtWidgets.QWidget):
             return
         self.follow_engine.set_gateways(source, target)
 
-        follow_direction = self.follow_direction_combo.currentText()
-        if follow_direction == '正向跟随':
-            is_inverse = False
-        else:
-            is_inverse = True
-        self.follow_engine.set_parameters('inverse_follow', is_inverse)
+        # follow_direction = self.follow_direction_combo.currentText()
+        # if follow_direction == '正向跟随':
+        #     is_inverse = False
+        # else:
+        #     is_inverse = True
+        # self.follow_engine.set_parameters('inverse_follow', is_inverse)
 
-        order_type = self.order_type_combo.currentText()
-        self.follow_engine.set_parameters('order_type', OrderType(order_type))
+        # order_type = self.order_type_combo.currentText()
+        # self.follow_engine.set_parameters('order_type', OrderType(order_type))
 
-        self.follow_engine.set_parameters('multiples', int(self.multiples_line.text()))
-        self.follow_engine.set_parameters('tick_add', int(self.tickout_line.text()))
+        # self.follow_engine.set_parameters('multiples', int(self.multiples_line.text()))
+        # self.follow_engine.set_parameters('tick_add', int(self.tickout_line.text()))
         # self.follow_engine.set_parameters('filter_trade_timeout', int(self.timeout_line.text()))
 
         result = self.follow_engine.start()
@@ -458,6 +346,10 @@ class FollowManager(QtWidgets.QWidget):
         dialog = SkipContractEditor(self, self.follow_engine)
         dialog.exec_()
 
+    def set_order_setting(self):
+        dialog = OrderSettingEditor(self, self.follow_engine)
+        dialog.exec_()
+
     def close_hedged_pos(self):
         dialog = CloseHedgedDialog(self, self.follow_engine)
         dialog.exec_()
@@ -485,18 +377,18 @@ class PosDeltaMonitor(BaseMonitor):
 
     headers = {
         "vt_symbol": {"display": "合约代码", "cell": BaseCell, "update": False},
-        "source_long": {"display": "源户多", "cell": BidCell, "update": True},
-        "source_short": {"display": "源户空", "cell": AskCell, "update": True},
-        "source_net": {"display": "源户净", "cell": PnlCell, "update": True},
-        "target_long": {"display": "目标多", "cell": BidCell, "update": True},
-        "target_short": {"display": "目标空", "cell": AskCell, "update": True},
-        "target_net": {"display": "目标净", "cell": PnlCell, "update": True},
+        "source_long": {"display": "A多", "cell": BidCell, "update": True},
+        "source_short": {"display": "A空", "cell": AskCell, "update": True},
+        "source_net": {"display": "A净", "cell": PnlCell, "update": True},
+        "target_long": {"display": "B多", "cell": BidCell, "update": True},
+        "target_short": {"display": "B空", "cell": AskCell, "update": True},
+        "target_net": {"display": "B净", "cell": PnlCell, "update": True},
         "long_delta": {"display": "多差", "cell": BaseCell, "update": True},
         "short_delta": {"display": "空差", "cell": BaseCell, "update": True},
         "net_delta": {"display": "净差", "cell": PnlCell, "update": True},
         "basic_delta": {"display": "底仓差", "cell": PnlCell, "update": True},
-        "source_traded_net": {"display": "源户日内净", "cell": PnlCell, "update": True},
-        "target_traded_net": {"display": "目标日内净", "cell": PnlCell, "update": True}
+        "source_traded_net": {"display": "AI净", "cell": PnlCell, "update": True},
+        "target_traded_net": {"display": "BI净", "cell": PnlCell, "update": True}
     }
 
     def init_ui(self):
@@ -715,6 +607,154 @@ class PosEditor(QtWidgets.QDialog):
         self.follow_engine.set_pos(self.modify_symbol, 'target_short', int(new_short))
         self.follow_engine.save_follow_data()
         self.write_log(f"{self.modify_symbol}仓位修改成功")
+
+    def write_log(self, msg: str):
+        """"""
+        self.follow_engine.write_log(msg)
+
+
+class OrderSettingEditor(QtWidgets.QDialog):
+    def __init__(self, parent: QtWidgets.QWidget, follow_engine: FollowEngine):
+        super().__init__()
+        self.parent = parent
+        self.follow_engine = follow_engine
+        self.init_ui()
+
+    def init_ui(self):
+        self.setWindowTitle("委托设置")
+        self.setMinimumWidth(300)
+
+        self.order_type_combo = QtWidgets.QComboBox()
+        self.order_type_combo.addItems(['限价', '市价'])
+        self.order_type_combo.activated[str].connect(self.set_order_type)
+        self.get_current_order_type()
+
+        self.chase_combo = QtWidgets.QComboBox()
+        self.chase_combo.addItems(['是', '否'])
+        self.chase_combo.activated[str].connect(self.set_is_chase)
+        self.get_current_chase()
+
+        validator = QtGui.QIntValidator()
+        self.chase_timeout_line = QtWidgets.QLineEdit(str(self.follow_engine.chase_order_timeout))
+        self.chase_timeout_line.setValidator(validator)
+        self.chase_timeout_line.editingFinished.connect(self.set_chase_order_timeout)
+
+        self.chase_tickadd_line = QtWidgets.QLineEdit(str(self.follow_engine.chase_order_tick_add))
+        self.chase_tickadd_line.setValidator(validator)
+        self.chase_tickadd_line.editingFinished.connect(self.set_chase_order_tickadd)
+
+        self.chase_resend_line = QtWidgets.QLineEdit(str(self.follow_engine.chase_max_resend))
+        self.chase_resend_line.setValidator(validator)
+        self.chase_resend_line.editingFinished.connect(self.set_chase_max_resend)
+
+        self.timeout_line = QtWidgets.QLineEdit(str(self.follow_engine.cancel_order_timeout))
+        self.timeout_line.setValidator(validator)
+        self.timeout_line.editingFinished.connect(self.set_cancel_order_timeout)
+
+        self.tickout_line = QtWidgets.QLineEdit(str(self.follow_engine.tick_add))
+        self.tickout_line.setValidator(validator)
+        self.tickout_line.editingFinished.connect(self.set_tick_add)
+
+        self.mustdone_tickout_line = QtWidgets.QLineEdit(str(self.follow_engine.must_done_tick_add))
+        self.mustdone_tickout_line.setValidator(validator)
+        self.mustdone_tickout_line.editingFinished.connect(self.set_must_done_tick_add)
+
+        self.single_max_line = QtWidgets.QLineEdit(str(self.follow_engine.single_max))
+        self.single_max_line.setValidator(validator)
+        self.single_max_line.editingFinished.connect(self.set_single_max)
+
+        self.save_setting_button = QtWidgets.QPushButton("保存设置")
+        self.save_setting_button.clicked.connect(self.save_setting)
+
+        form = QtWidgets.QFormLayout()
+        form.addRow("发单类型", self.order_type_combo)
+        form.addRow("超时撤单（秒）", self.timeout_line)
+        form.addRow("小超价档位", self.tickout_line)
+        form.addRow("大超价档位", self.mustdone_tickout_line)
+        form.addRow("单笔最大手数", self.single_max_line)
+        form.addRow("是否追单", self.chase_combo)
+        form.addRow("追单超时", self.chase_timeout_line)
+        form.addRow("追单超价", self.chase_tickadd_line)
+        form.addRow("最大追单次数", self.chase_resend_line)
+        form.addRow(self.save_setting_button)
+
+        vbox = QtWidgets.QVBoxLayout()
+        vbox.addLayout(form)
+
+        self.setLayout(vbox)
+
+    def set_order_type(self, order_type: str):
+        """"""
+        if order_type == "限价":
+            self.follow_engine.set_parameters('order_type', OrderType.LIMIT)
+        else:
+            self.follow_engine.set_parameters('order_type', OrderType.MARKET)
+        self.write_log(f"发单类型：{self.follow_engine.order_type.value} 设置成功")
+
+    def set_is_chase(self, chase_flag: str):
+        """"""
+        if chase_flag == "是":
+            self.follow_engine.set_parameters('is_chase_order', True)
+        else:
+            self.follow_engine.set_parameters('is_chase_order', False)
+        self.write_log(f"是否追单：{self.follow_engine.is_chase_order}")
+
+    def get_current_order_type(self):
+        """"""
+        order_type = self.follow_engine.order_type
+        self.order_type_combo.setCurrentText(order_type.value)
+
+    def get_current_chase(self):
+        """"""
+        is_chase_order = self.follow_engine.is_chase_order
+        if is_chase_order:
+            self.chase_combo.setCurrentIndex(0)
+        else:
+            self.chase_combo.setCurrentIndex(1)
+
+    def set_chase_order_timeout(self):
+        """"""
+        text = self.chase_timeout_line.text()
+        self.follow_engine.set_parameters('chase_order_timeout', int(text))
+        self.write_log(f"追价超时自动撤单：{self.follow_engine.chase_order_timeout} 秒设置成功")
+
+    def set_chase_order_tickadd(self):
+        """"""
+        text = self.chase_tickadd_line.text()
+        self.follow_engine.set_parameters('chase_order_tick_add', int(text))
+        self.write_log(f"追价超价档位：{self.follow_engine.chase_order_tick_add} 设置成功")
+
+    def set_chase_max_resend(self):
+        """"""
+        text = self.chase_max_resend.text()
+        self.follow_engine.set_parameters('chase_max_resend', int(text))
+        self.write_log(f"最大追价次数：{self.follow_engine.chase_max_resend} 设置成功")
+
+    def set_cancel_order_timeout(self):
+        """"""
+        text = self.timeout_line.text()
+        self.follow_engine.set_parameters('cancel_order_timeout', int(text))
+        self.write_log(f"未成交自动撤单超时：{self.follow_engine.cancel_order_timeout} 秒设置成功")
+
+    def set_tick_add(self):
+        """"""
+        text = self.tickout_line.text()
+        self.follow_engine.set_parameters('tick_add', int(text))
+        self.write_log(f"小超价档位：{self.follow_engine.tick_add} 设置成功")
+
+    def set_must_done_tick_add(self):
+        text = self.mustdone_tickout_line.text()
+        self.follow_engine.set_parameters('must_done_tick_add', int(text))
+        self.write_log(f"大超价档位：{self.follow_engine.must_done_tick_add} 设置成功")
+
+    def set_single_max(self):
+        """"""
+        text = self.single_max_line.text()
+        self.follow_engine.set_parameters('single_max', int(text))
+        self.write_log(f"单笔最大手数：{self.follow_engine.single_max} 设置成功")
+
+    def save_setting(self):
+        self.follow_engine.save_follow_setting()
 
     def write_log(self, msg: str):
         """"""
