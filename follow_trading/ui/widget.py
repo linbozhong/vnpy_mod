@@ -389,7 +389,8 @@ class PosDeltaMonitor(BaseMonitor):
         "net_delta": {"display": "净差", "cell": PnlCell, "update": True},
         "basic_delta": {"display": "底仓差", "cell": PnlCell, "update": True},
         "source_traded_net": {"display": "AI净", "cell": PnlCell, "update": True},
-        "target_traded_net": {"display": "BI净", "cell": PnlCell, "update": True}
+        "target_traded_net": {"display": "BI净", "cell": PnlCell, "update": True},
+        'lost_follow_net': {"display": "丢失", "cell": PnlCell, "update": True}
     }
 
     def init_ui(self):
