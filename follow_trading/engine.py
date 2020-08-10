@@ -102,6 +102,8 @@ class FollowEngine(BaseEngine):
         self.must_done_tick_add = 25
 
         self.is_chase_order = False
+        self.chase_base_last_order_price = True
+        self.chase_base_price = OrderBasePrice.GOOD_FOR_SELF
         self.chase_order_tick_add = 5
         self.chase_order_timeout = 10
         self.chase_max_resend = 3
@@ -118,6 +120,8 @@ class FollowEngine(BaseEngine):
         }
 
         self.is_intraday_trading = True
+        self.is_filter_order_vol = True
+        self.order_volumes_to_follow = [1, 2]
 
         # Test Mod
         self.run_type = FollowRunType.LIVE
@@ -146,9 +150,9 @@ class FollowEngine(BaseEngine):
 
         self.is_trade_saved = False
 
-        self.source_traded_net_pos = 0
-        self.target_traded_net_pos = 0
-        self.target_traded_pos_dict = {}    # vt_symbol: list
+        # traded net variables
+        self.source_traded_pos_dict = {}    # vt_symbol: list
+        self.target_traded_pos_dict = {}
         
         # Chase order variables
         # self.chase_order_dict = {}      # vt_orderid: bool
@@ -158,7 +162,6 @@ class FollowEngine(BaseEngine):
 
         self.intraday_orderids = set()
 
-        self.order_volumes_to_follow = [1, 2]
 
         # Timeout auto cancel
         self.active_order_set = set()
@@ -178,12 +181,13 @@ class FollowEngine(BaseEngine):
                            'order_type', 'run_type',
                            'test_symbol', 'intraday_symbols',
                            'single_max', 'single_max_dict',
-                           'is_chase_order', 'chase_order_timeout', 'chase_order_tick_add',
-                           'is_intraday_trading'
+                           'is_chase_order', 'chase_base_price', 'chase_base_last_order_price',
+                           'chase_order_timeout', 'chase_order_tick_add', 'chase_max_resend',
+                           'is_intraday_trading', 'is_filter_order_vol', 'order_volumes_to_follow'
                            ]
 
-        self.variables = ['tradeid_orderids_dict', 'positions', 'target_traded_pos_dict']
-        self.clear_variables = ['tradeid_orderids_dict', 'target_traded_pos_dict']
+        self.variables = ['tradeid_orderids_dict', 'positions', 'source_traded_pos_dict', 'target_traded_pos_dict']
+        self.clear_variables = ['tradeid_orderids_dict', 'source_traded_pos_dict', 'target_traded_pos_dict']
         self.pos_key = [
                         'source_long', 'source_short', 'source_net',
                         'target_long', 'target_short', 'target_net',
@@ -298,6 +302,8 @@ class FollowEngine(BaseEngine):
                     setattr(self, name, OrderType(value))
                 elif name == 'run_type':
                     setattr(self, name, FollowRunType(value))
+                elif name == "chase_base_price":
+                    setattr(self, name, OrderBasePrice(value))
                 else:
                     setattr(self, name, value)
         self.write_log("参数配置读取成功")
@@ -307,7 +313,7 @@ class FollowEngine(BaseEngine):
         Save follow setting to setting file.
         """
         for name in self.parameters:
-            if name in ['order_type', 'run_type']:
+            if name in ['order_type', 'run_type', 'chase_base_price']:
                 self.follow_setting[name] = getattr(self, name).value
             else:
                 self.follow_setting[name] = getattr(self, name)
@@ -456,7 +462,7 @@ class FollowEngine(BaseEngine):
         self.clear_expired_pos()
 
         self.save_follow_setting()
-        # self.save_follow_data()
+        self.save_follow_data()
 
         self.save_trade()
         # self.save_contract()
@@ -605,7 +611,7 @@ class FollowEngine(BaseEngine):
                         ancestor_orderid = self.chase_ancestor_dict.get(vt_orderid)
                         resend_count = self.chase_resend_count_dict.get(ancestor_orderid)
                         if resend_count < self.chase_max_resend:
-                            self.resend_order(order)
+                            self.resend_order(order, self.chase_base_last_order_price)
                         else:
                             self.write_log(f"{ancestor_orderid}委托超过最大追单次数")
         except:  # noqa
@@ -642,13 +648,15 @@ class FollowEngine(BaseEngine):
                     trades = [trade_dict]
                 else:
                     trades = self.split_trade_to_open_close(trade)
+
                     # update source traded net pos
+                    self.add_source_traded(trade)
                     self.update_source_traded_net(trade.vt_symbol, self.get_trade_net_vol(trade))
-                    # self.source_traded_net_pos += self.get_trade_net_vol(trade)
 
                 for trade_dict in trades:
                     trade = trade_dict['trade']
                     is_must_done = trade_dict['is_must_done']
+                    print(trade.vt_tradeid, 'must_done:', is_must_done)
 
                     # generate order request based on trade
                     req = self.convert_trade_to_order_req(trade, is_must_done)
@@ -714,35 +722,38 @@ class FollowEngine(BaseEngine):
         """
         split trade to open or close by today traded net pos
         """
+        symbol_pos = self.get_symbol_pos(trade.vt_symbol)
+        source_traded_net = symbol_pos['source_traded_net']
+
         trades = []
         trade_net_vol = self.get_trade_net_vol(trade)
-        if self.source_traded_net_pos == 0:
+        if source_traded_net == 0:
             trades.append(self.get_trade_dict(trade, False))
-        elif self.source_traded_net_pos > 0:
+        elif source_traded_net > 0:
             if trade_net_vol > 0:
                 trades.append(self.get_trade_dict(trade, False))
             else:
-                if abs(trade_net_vol) <= self.source_traded_net_pos:
+                if abs(trade_net_vol) <= source_traded_net:
                     trades.append(self.get_trade_dict(trade, True))
                 else:
                     close_trade = copy(trade)
-                    close_trade.volume = self.source_traded_net_pos
+                    close_trade.volume = source_traded_net
                     trades.append(self.get_trade_dict(close_trade, True))
                     open_trade = copy(trade)
-                    open_trade.volume = abs(trade_net_vol + self.source_traded_net_pos)
+                    open_trade.volume = abs(trade_net_vol + source_traded_net)
                     trades.append(self.get_trade_dict(open_trade, False))
         else:
             if trade_net_vol < 0:
                 trades.append(self.get_trade_dict(trade, False))
             else:
-                if trade_net_vol <= abs(self.source_traded_net_pos):
+                if trade_net_vol <= abs(source_traded_net):
                     trades.append(self.get_trade_dict(trade, True))
                 else:
                     close_trade = copy(trade)
-                    close_trade.volume = abs(self.source_traded_net_pos)
+                    close_trade.volume = abs(source_traded_net)
                     trades.append(self.get_trade_dict(close_trade, True))
                     open_trade = copy(trade)
-                    open_trade.volume = abs(trade_net_vol + self.source_traded_net_pos)
+                    open_trade.volume = abs(trade_net_vol + source_traded_net)
                     trades.append(self.get_trade_dict(open_trade, False))
         return trades
 
@@ -782,15 +793,22 @@ class FollowEngine(BaseEngine):
 
             self.active_order_counter[vt_orderid] += 1
 
-    def resend_order(self, order: OrderData):
+    def resend_order(self, order: OrderData, base_last_order_price: bool = True):
         """"""
         new_volume = order.volume - order.traded
-        price = self.convert_order_price(order.vt_symbol,
-                                         order.direction,
-                                         tick_add=self.chase_order_tick_add,
-                                         base_price=OrderBasePrice.GOOD_FOR_SELF)
-        ancestor_orderid = self.chase_ancestor_dict.get(order.vt_orderid)
 
+        if base_last_order_price:
+            price = self.convert_order_price(order.vt_symbol,
+                                            order.direction,
+                                            price=order.price,
+                                            tick_add=self.chase_order_tick_add)
+        else:
+            price = self.convert_order_price(order.vt_symbol,
+                                            order.direction,
+                                            tick_add=self.chase_order_tick_add,
+                                            base_price=OrderBasePrice.GOOD_FOR_SELF)
+
+        ancestor_orderid = self.chase_ancestor_dict.get(order.vt_orderid)
         req = OrderRequest(
             symbol=order.symbol,
             exchange=order.exchange,
@@ -805,6 +823,8 @@ class FollowEngine(BaseEngine):
         self.chase_orderids.add(vt_orderid)
         self.chase_ancestor_dict[vt_orderid] = ancestor_orderid
         self.chase_resend_count_dict[ancestor_orderid] += 1
+
+        self.intraday_orderids.add(vt_orderid)
 
     def refresh_pos(self):
         """
@@ -889,18 +909,14 @@ class FollowEngine(BaseEngine):
         if position.direction == Direction.NET:
             return
 
-        vt_symbol = position.vt_symbol
-        if self.positions.get(vt_symbol, None) is None:
-            self.init_symbol_pos(vt_symbol)
+        symbol_pos = self.get_symbol_pos(position.vt_symbol)
+        if position.direction == Direction.LONG:
+            symbol_pos['source_long'] = position.volume
         else:
-            symbol_pos = self.positions[vt_symbol]
-            if position.direction == Direction.LONG:
-                symbol_pos['source_long'] = position.volume
-            else:
-                symbol_pos['source_short'] = position.volume
+            symbol_pos['source_short'] = position.volume
 
-            symbol_pos['source_net'] = symbol_pos['source_long'] - symbol_pos['source_short']
-            symbol_pos['net_delta'] = symbol_pos['source_net'] * self.multiples - symbol_pos['target_net']
+        symbol_pos['source_net'] = symbol_pos['source_long'] - symbol_pos['source_short']
+        symbol_pos['net_delta'] = symbol_pos['source_net'] * self.multiples - symbol_pos['target_net']
 
     def update_source_pos_by_trade(self, trade: TradeData):
         """"""
@@ -948,18 +964,29 @@ class FollowEngine(BaseEngine):
 
         symbol_pos = self.get_symbol_pos(position.vt_symbol)
         if position.direction == Direction.LONG:
-            symbol_pos['source_long'] = position.volume
+            symbol_pos['target_long'] = position.volume
         else:
-            symbol_pos['source_short'] = position.volume
+            symbol_pos['target_short'] = position.volume
 
         symbol_pos['target_net'] = symbol_pos['target_long'] - symbol_pos['target_short']
         symbol_pos['net_delta'] = symbol_pos['source_net'] * self.multiples - symbol_pos['target_net']
+
+    def get_source_traded_list(self, vt_symbol: str):
+        if self.source_traded_pos_dict.get(vt_symbol, None) is None:
+            self.source_traded_pos_dict[vt_symbol] = []
+        traded_list = self.source_traded_pos_dict[vt_symbol]
+        return traded_list
 
     def get_target_traded_list(self, vt_symbol: str):
         if self.target_traded_pos_dict.get(vt_symbol, None) is None:
             self.target_traded_pos_dict[vt_symbol] = []
         traded_list = self.target_traded_pos_dict[vt_symbol]
         return traded_list
+
+    def add_source_traded(self, trade: TradeData):
+        traded_list = self.get_source_traded_list(trade.vt_symbol)
+        vol = self.get_trade_net_vol(trade)
+        traded_list.append(vol)
 
     def add_target_traded(self, trade: TradeData):
         """"""
@@ -1038,12 +1065,15 @@ class FollowEngine(BaseEngine):
 
     def is_to_follow_volume(self, trade: TradeData):
         """"""
-        order = self.main_engine.get_order(trade.vt_orderid)
-        if order.volume in self.order_volumes_to_follow:
-            return True
+        if self.is_filter_order_vol:
+            order = self.main_engine.get_order(trade.vt_orderid)
+            if order.volume in self.order_volumes_to_follow:
+                return True
+            else:
+                self.write_log(f"{order.vt_orderid}手数{order.volume}不符合跟单规则。")
+                return False
         else:
-            self.write_log(f"{order.vt_orderid}手数{order.volume}不符合跟单规则。")
-            return False
+            return True
 
     def filter_source_trade(self, trade: TradeData):
         """
@@ -1121,7 +1151,6 @@ class FollowEngine(BaseEngine):
         # call this function only self.is_price_inited() is True.
         limit_price = self.limited_prices.get(vt_symbol)
         latest_prices = self.latest_prices.get(vt_symbol)
-
         ask_price, bid_price = latest_prices['ask_price'], latest_prices['bid_price']
 
         # if limit up or limt down happend, save ask or bid price to variable.
@@ -1186,17 +1215,17 @@ class FollowEngine(BaseEngine):
 
         # Check target traded net pos if intraday order is close order
         if self.is_intraday_trading and is_must_done:
-            target_traded_net = self.get_symbol_pos(trade.vt_symbl)['target_traded_net']
+            target_traded_net = self.get_symbol_pos(trade.vt_symbol)['target_traded_net']
             if not target_traded_net:
-                self.write_log(f"{trade.vt_symbl}目标户日内净仓为0，无需继续平仓")
+                self.write_log(f"{trade.vt_symbol}目标户日内净仓为0，无需继续平仓")
                 return
             else:
                 if req.volume > abs(target_traded_net):
                     req.volume = abs(target_traded_net)
-                    self.update_target_traded_net(trade.vt_symbl, -target_traded_net)
+                    self.update_target_traded_net(trade.vt_symbol, -target_traded_net)
                 else:
                     vol = self.get_trade_net_vol(trade)
-                    self.update_target_traded_net(trade.vt_symbl, vol)
+                    self.update_target_traded_net(trade.vt_symbol, vol)
 
         # T0 symbol use lock mode, redirect.
         if self.strip_digit(trade.vt_symbol) in self.intraday_symbols:

@@ -20,7 +20,8 @@ from ..engine import (
     APP_NAME,
     FollowEngine,
     EVENT_FOLLOW_LOG,
-    EVENT_FOLLOW_POS_DELTA
+    EVENT_FOLLOW_POS_DELTA,
+    OrderBasePrice
 )
 
 
@@ -629,10 +630,20 @@ class OrderSettingEditor(QtWidgets.QDialog):
         self.order_type_combo.activated[str].connect(self.set_order_type)
         self.get_current_order_type()
 
+        self.chase_base_price_combo = QtWidgets.QComboBox()
+        self.chase_base_price_combo.addItems(['对手价', '挂单价'])
+        self.chase_base_price_combo.activated[str].connect(self.set_chase_base_price)
+        self.get_current_chase_base_price()
+
         self.chase_combo = QtWidgets.QComboBox()
         self.chase_combo.addItems(['是', '否'])
         self.chase_combo.activated[str].connect(self.set_is_chase)
         self.get_current_chase()
+
+        self.chase_base_last_order_combo = QtWidgets.QComboBox()
+        self.chase_base_last_order_combo.addItems(['是', '否'])
+        self.chase_base_last_order_combo.activated[str].connect(self.set_chase_base_last)
+        self.get_current_chase_base_last()
 
         validator = QtGui.QIntValidator()
         self.chase_timeout_line = QtWidgets.QLineEdit(str(self.follow_engine.chase_order_timeout))
@@ -668,11 +679,13 @@ class OrderSettingEditor(QtWidgets.QDialog):
 
         form = QtWidgets.QFormLayout()
         form.addRow("发单类型", self.order_type_combo)
-        form.addRow("超时撤单（秒）", self.timeout_line)
+        form.addRow("超时撤单(秒)", self.timeout_line)
         form.addRow("小超价档位", self.tickout_line)
         form.addRow("大超价档位", self.mustdone_tickout_line)
         form.addRow("单笔最大手数", self.single_max_line)
         form.addRow("是否追单", self.chase_combo)
+        form.addRow("是否基于上笔委托追单", self.chase_base_last_order_combo)
+        form.addRow("追单基础价(不指定)", self.chase_base_price_combo)
         form.addRow("追单超时", self.chase_timeout_line)
         form.addRow("追单超价", self.chase_tickadd_line)
         form.addRow("最大追单次数", self.chase_resend_line)
@@ -683,6 +696,30 @@ class OrderSettingEditor(QtWidgets.QDialog):
 
         self.setLayout(vbox)
 
+    def get_current_order_type(self):
+        """"""
+        order_type = self.follow_engine.order_type
+        self.order_type_combo.setCurrentText(order_type.value)
+
+    def get_current_chase_base_price(self):
+        base_price = self.follow_engine.chase_base_price
+        self.chase_base_price_combo.setCurrentText(base_price.value)
+
+    def get_current_chase(self):
+        """"""
+        is_chase_order = self.follow_engine.is_chase_order
+        if is_chase_order:
+            self.chase_combo.setCurrentIndex(0)
+        else:
+            self.chase_combo.setCurrentIndex(1)
+
+    def get_current_chase_base_last(self):
+        is_chase_base_last = self.follow_engine.chase_base_last_order_price
+        if is_chase_base_last:
+            self.chase_base_last_order_combo.setCurrentIndex(0)
+        else:
+            self.chase_base_last_order_combo.setCurrentIndex(1)
+
     def set_order_type(self, order_type: str):
         """"""
         if order_type == "限价":
@@ -690,6 +727,13 @@ class OrderSettingEditor(QtWidgets.QDialog):
         else:
             self.follow_engine.set_parameters('order_type', OrderType.MARKET)
         self.write_log(f"发单类型：{self.follow_engine.order_type.value} 设置成功")
+
+    def set_chase_base_price(self, chase_base_price: str):
+        if chase_base_price == "挂单价":
+            self.follow_engine.set_parameters('chase_base_price', OrderBasePrice.GOOD_FOR_SELF)
+        else:
+            self.follow_engine.set_parameters('chase_base_price', OrderBasePrice.GOOD_FOR_OTHER)
+        self.write_log(f"追单基础价（不指定）：{self.follow_engine.chase_base_price.value} 设置成功")
 
     def set_is_chase(self, chase_flag: str):
         """"""
@@ -699,18 +743,12 @@ class OrderSettingEditor(QtWidgets.QDialog):
             self.follow_engine.set_parameters('is_chase_order', False)
         self.write_log(f"是否追单：{self.follow_engine.is_chase_order}")
 
-    def get_current_order_type(self):
-        """"""
-        order_type = self.follow_engine.order_type
-        self.order_type_combo.setCurrentText(order_type.value)
-
-    def get_current_chase(self):
-        """"""
-        is_chase_order = self.follow_engine.is_chase_order
-        if is_chase_order:
-            self.chase_combo.setCurrentIndex(0)
+    def set_chase_base_last(self, chase_flag: str):
+        if chase_flag == "是":
+            self.follow_engine.set_parameters('chase_base_last_order_price', True)
         else:
-            self.chase_combo.setCurrentIndex(1)
+            self.follow_engine.set_parameters('chase_base_last_order_price', False)
+        self.write_log(f"追价是否基于上笔委托价格：{self.follow_engine.is_chase_order}")
 
     def set_chase_order_timeout(self):
         """"""
@@ -792,6 +830,11 @@ class SkipContractEditor(QtWidgets.QDialog):
         self.order_vol_combo.activated[str].connect(self.set_removed_order_vol)
         self.refresh_order_vol_white_list()
 
+        self.filter_vol_combo = QtWidgets.QComboBox()
+        self.filter_vol_combo.addItems(['是', '否'])
+        self.filter_vol_combo.activated[str].connect(self.set_is_filter_vol)
+        self.get_current_filter_vol()
+
         self.new_remove_line = QtWidgets.QLineEdit()
         self.new_intra_line = QtWidgets.QLineEdit()
         self.new_order_vol_line = QtWidgets.QLineEdit()
@@ -821,7 +864,10 @@ class SkipContractEditor(QtWidgets.QDialog):
         ]
 
         for btn in big_btns:
-            btn.setFixedHeight(btn.sizeHint().height() * 1.5)
+            btn.setFixedHeight(btn.sizeHint().height() * 1)
+
+        save_setting_button = QtWidgets.QPushButton("保存设置")
+        save_setting_button.clicked.connect(self.save_setting)
 
         form = QtWidgets.QFormLayout()
         form.addRow("禁止同步合约", self.symbol_combo)
@@ -840,6 +886,7 @@ class SkipContractEditor(QtWidgets.QDialog):
         hbox_com.addWidget(button_remove_com)
 
         form_order_vol = QtWidgets.QFormLayout()
+        form_order_vol.addRow("是否过滤委托手数", self.filter_vol_combo)
         form_order_vol.addRow("允许跟单委托手数", self.order_vol_combo)
         form_order_vol.addRow("添加新手数", self.new_order_vol_line)
 
@@ -854,6 +901,8 @@ class SkipContractEditor(QtWidgets.QDialog):
         vbox.addLayout(hbox_com)
         vbox.addLayout(form_order_vol)
         vbox.addLayout(hbox_order_vol)
+
+        vbox.addWidget(save_setting_button)
 
         self.setLayout(vbox)
 
@@ -971,6 +1020,25 @@ class SkipContractEditor(QtWidgets.QDialog):
                 print(self.follow_engine.get_order_vols_to_follow())
         else:
             self.write_log(f"手数尚未选择")
+
+    def set_is_filter_vol(self, chase_flag: str):
+        """"""
+        if chase_flag == "是":
+            self.follow_engine.set_parameters('is_filter_order_vol', True)
+        else:
+            self.follow_engine.set_parameters('is_filter_order_vol', False)
+        self.write_log(f"是否过滤委托手数：{self.follow_engine.is_filter_order_vol}")
+
+    def get_current_filter_vol(self):
+        """"""
+        is_filter_order_vol = self.follow_engine.is_filter_order_vol
+        if is_filter_order_vol:
+            self.filter_vol_combo.setCurrentIndex(0)
+        else:
+            self.filter_vol_combo.setCurrentIndex(1)
+
+    def save_setting(self):
+        self.follow_engine.save_follow_setting()
 
     def write_log(self, msg: str):
         """"""
