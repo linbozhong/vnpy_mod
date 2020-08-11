@@ -56,7 +56,7 @@ class FollowManager(QtWidgets.QWidget):
     def init_ui(self):
         """"""
         self.setWindowTitle(f"跟随交易 [{TRADER_DIR}]")
-        self.setMinimumSize(960, 750)
+        self.setMinimumSize(900, 750)
         self.setMaximumSize(1920, 1080)
 
         # create widgets
@@ -388,8 +388,8 @@ class PosDeltaMonitor(BaseMonitor):
         "short_delta": {"display": "空差", "cell": BaseCell, "update": True},
         "net_delta": {"display": "净差", "cell": PnlCell, "update": True},
         "basic_delta": {"display": "底仓差", "cell": PnlCell, "update": True},
-        "source_traded_net": {"display": "AI净", "cell": PnlCell, "update": True},
-        "target_traded_net": {"display": "BI净", "cell": PnlCell, "update": True},
+        "source_traded_net": {"display": "AD净", "cell": PnlCell, "update": True},
+        # "target_traded_net": {"display": "BD净", "cell": PnlCell, "update": True},
         'lost_follow_net': {"display": "丢失", "cell": PnlCell, "update": True}
     }
 
@@ -558,6 +558,9 @@ class PosEditor(QtWidgets.QDialog):
         self.basic_delta_line = QtWidgets.QLineEdit()
         self.basic_delta_line.setValidator(validator)
 
+        self.lost_follow_line = QtWidgets.QLineEdit()
+        self.lost_follow_line.setValidator(validator)
+
         button_modify = QtWidgets.QPushButton("修改")
         button_modify.clicked.connect(self.modify)
 
@@ -569,6 +572,7 @@ class PosEditor(QtWidgets.QDialog):
         form.addRow("目标户多仓", self.long_pos_line)
         form.addRow("目标户空仓", self.short_pos_line)
         form.addRow("底仓差", self.basic_delta_line)
+        form.addRow("丢失净仓", self.lost_follow_line)
 
         hbox = QtWidgets.QHBoxLayout()
         hbox.addWidget(button_modify)
@@ -587,10 +591,12 @@ class PosEditor(QtWidgets.QDialog):
         target_long = self.follow_engine.get_pos(vt_symbol, 'target_long')
         target_short = self.follow_engine.get_pos(vt_symbol, 'target_short')
         basic_delta = self.follow_engine.get_pos(vt_symbol, 'basic_delta')
+        lost_follow = self.follow_engine.get_pos(vt_symbol, 'lost_follow_net')
 
         self.basic_delta_line.setText(str(basic_delta))
         self.long_pos_line.setText(str(target_long))
         self.short_pos_line.setText(str(target_short))
+        self.lost_follow_line.setText(str(lost_follow))
         self.write_log(f"选中合约{self.modify_symbol}")
 
     def refresh_symbol_list(self):
@@ -604,9 +610,11 @@ class PosEditor(QtWidgets.QDialog):
         new_basic_delta = self.basic_delta_line.text()
         new_long = self.long_pos_line.text()
         new_short = self.short_pos_line.text()
+        new_lost_follow = self.lost_follow_line.text()
         self.follow_engine.set_pos(self.modify_symbol, 'basic_delta', int(new_basic_delta))
         self.follow_engine.set_pos(self.modify_symbol, 'target_long', int(new_long))
         self.follow_engine.set_pos(self.modify_symbol, 'target_short', int(new_short))
+        self.follow_engine.set_pos(self.modify_symbol, 'lost_follow_net', int(new_lost_follow))
         self.follow_engine.save_follow_data()
         self.write_log(f"{self.modify_symbol}仓位修改成功")
 
@@ -644,6 +652,7 @@ class OrderSettingEditor(QtWidgets.QDialog):
         self.chase_base_last_order_combo = QtWidgets.QComboBox()
         self.chase_base_last_order_combo.addItems(['是', '否'])
         self.chase_base_last_order_combo.activated[str].connect(self.set_chase_base_last)
+        self.chase_base_last_order_combo.currentIndexChanged[int].connect(self.change_base_price_editable)
         self.get_current_chase_base_last()
 
         validator = QtGui.QIntValidator()
@@ -721,6 +730,12 @@ class OrderSettingEditor(QtWidgets.QDialog):
         else:
             self.chase_base_last_order_combo.setCurrentIndex(1)
 
+    def change_base_price_editable(self, editable: int):
+        if not editable:
+            self.chase_base_price_combo.setEnabled(False)
+        else:
+            self.chase_base_price_combo.setEnabled(True)
+
     def set_order_type(self, order_type: str):
         """"""
         if order_type == "限价":
@@ -747,8 +762,10 @@ class OrderSettingEditor(QtWidgets.QDialog):
     def set_chase_base_last(self, chase_flag: str):
         if chase_flag == "是":
             self.follow_engine.set_parameters('chase_base_last_order_price', True)
+            self.chase_base_price_combo.setEnabled(False)
         else:
             self.follow_engine.set_parameters('chase_base_last_order_price', False)
+            self.chase_base_price_combo.setEnabled(True)
         self.write_log(f"追价是否基于上笔委托价格：{self.follow_engine.is_chase_order}")
 
     def set_chase_order_timeout(self):
