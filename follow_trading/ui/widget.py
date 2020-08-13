@@ -142,8 +142,8 @@ class FollowManager(QtWidgets.QWidget):
 
         # set layout
         form = QtWidgets.QFormLayout()
-        form.addRow("跟随接口名", self.source_combo)
-        form.addRow("发单接口名", self.target_combo)
+        form.addRow("标准户接口", self.source_combo)
+        form.addRow("跟单户接口", self.target_combo)
         form.addRow("跟单方向", self.follow_direction_combo)
         form.addRow("超时禁跟（秒）", self.follow_timeout_line)
         form.addRow("跟随倍数", self.multiples_line)
@@ -275,7 +275,7 @@ class FollowManager(QtWidgets.QWidget):
     def start_follow(self):
         """"""
         if not self.is_gateway_inited:
-            self.write_log("跟单接口和下单接口未全部初始化，可能是RPC尚未连接账户，必须重启程序正确连接后再启动！")
+            self.write_log("标准户接口和跟单户接口未全部初始化，请检查RPC是否已连接服务器，然后重启程序重试。")
             self.start_button.setEnabled(False)
             return
 
@@ -284,7 +284,7 @@ class FollowManager(QtWidgets.QWidget):
         source = self.source_combo.currentText()
         target = self.target_combo.currentText()
         if source == target:
-            self.follow_engine.write_log("跟随接口和发单接口不能是同一个")
+            self.follow_engine.write_log("标准户接口和跟单户接口不能是同一个")
             return
         self.follow_engine.set_gateways(source, target)
 
@@ -695,6 +695,7 @@ class OrderSettingEditor(QtWidgets.QDialog):
 
         self.save_setting_button = QtWidgets.QPushButton("保存设置")
         self.save_setting_button.clicked.connect(self.save_setting)
+        self.save_setting_button.setFixedHeight(self.save_setting_button.sizeHint().height() * 1.5)
 
         form = QtWidgets.QFormLayout()
         form.addRow("发单类型", self.order_type_combo)
@@ -895,6 +896,7 @@ class SkipContractEditor(QtWidgets.QDialog):
 
         save_setting_button = QtWidgets.QPushButton("保存设置")
         save_setting_button.clicked.connect(self.save_setting)
+        save_setting_button.setFixedHeight(save_setting_button.sizeHint().height() * 1.5)
 
         form = QtWidgets.QFormLayout()
         form.addRow("禁止同步合约", self.symbol_combo)

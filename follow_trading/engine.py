@@ -130,6 +130,7 @@ class FollowEngine(BaseEngine):
         self.run_type = FollowRunType.LIVE
         self.test_symbol = 'rb2001.SHFE'
         self.test_count = 0
+
         self.tick_time = None
 
         # Variables
@@ -139,9 +140,9 @@ class FollowEngine(BaseEngine):
         self.follow_setting = {}
 
         self.sync_order_ref = 0
-        self.tradeid_orderids_dict = {}     # vt_tradeid: [vt_orderid]
+        self.tradeid_orderids_dict = {}         # vt_tradeid: list[vt_orderid]
         self.positions = {}
-        self.target_positions = {}
+        # self.target_positions = {}
 
         self.vt_tradeids = set()
         self.limited_prices = {}
@@ -151,23 +152,22 @@ class FollowEngine(BaseEngine):
 
         self.is_hedged_closed = False
         self.is_trade_saved = False
-        self.is_data_archived = False
 
         # traded net variables
         self.intraday_orderids = set()
         self.open_orderids = set()
-        self.lost_follow_dict = {}          # vt_symbol: int
+        # self.lost_follow_dict = {}            # vt_symbol: int
         
         # Chase order variables
         self.chase_orderids = set()
-        self.chase_ancestor_dict = {}       # vt_orderid: vt_orderid
-        self.chase_resend_count_dict = {}   # vt_orderid: int
+        self.chase_ancestor_dict = {}           # vt_orderid: vt_orderid
+        self.chase_resend_count_dict = {}       # vt_orderid: int
 
         # Timeout auto cancel
         self.active_order_set = set()
-        self.active_order_counter = {}
+        self.active_order_counter = {}          # vt_orderid: int
+        self.cancel_counter = {}                # vt_orderid: int
         self.max_cancel = 3
-        self.cancel_counter = {}
 
         self.offset_converter = OffsetConverter(main_engine)
 
@@ -204,7 +204,7 @@ class FollowEngine(BaseEngine):
         Init engine.
         """
         self.write_log("参数和数据读取成功。")
-        # update vt_tradeid firstly
+        # Update vt_tradeid firstly
         self.update_tradeids()
         print('vt_tradeids', self.vt_tradeids)
 
@@ -266,7 +266,7 @@ class FollowEngine(BaseEngine):
         """
         Get connected gateway names.
         """
-        # if not self.gateway_names:
+        # If not self.gateway_names:
         accounts = self.main_engine.get_all_accounts()
         print(accounts)
         self.gateway_names = [account.gateway_name for account in accounts]
@@ -342,18 +342,19 @@ class FollowEngine(BaseEngine):
         """
         Clear follow data after market closed
         """
-        if self.follow_data and not self.is_data_archived:
-            # save to history data file
+        if self.follow_data:
+            # Save to history data file if file not exists
             today = datetime.now().strftime('%Y%m%d')
-            save_json(f"follow_history/{today}_{self.data_filename}", self.follow_data)
-            self.write_log("清除临时数据并保存至历史成功")
+            fn = f"follow_history/{today}_{self.data_filename}"
+            fp = get_file_path(fn)
+            if not fp.exists():
+                save_json(fn, self.follow_data)
+                self.write_log("清除临时数据并保存至历史成功")
 
-            # clear the template variables
+            # Clear the template variables
             for name in self.clear_variables:
                 self.follow_data[name].clear()
             save_json(self.data_filename, self.follow_data)
-
-            self.is_data_archived = True
 
     def save_trade(self):
         """
@@ -417,7 +418,7 @@ class FollowEngine(BaseEngine):
 
     def auto_save_trade(self):
         """
-        Auto saved sorts of info after market closed.
+        Auto saved sorts of info after market closed, only allow run once.
         """
         if self.is_trade_saved:
             return
@@ -550,7 +551,6 @@ class FollowEngine(BaseEngine):
             else:
                 break
         return res
-
 
     def is_intra_day_symbol(self, symbol: str):
         """"""
@@ -823,6 +823,8 @@ class FollowEngine(BaseEngine):
             cancel_counter = self.cancel_counter.get(vt_orderid, None)
             if cancel_counter and cancel_counter > self.max_cancel:
                 self.write_log(f"{prefix}委托单{vt_orderid} 撤单超过{self.max_cancel}次，停止撤单。")
+                self.active_order_counter.pop(vt_orderid)
+                self.active_order_set.remove(vt_orderid)
                 continue
 
             if counter > cancel_timeout:
@@ -907,6 +909,7 @@ class FollowEngine(BaseEngine):
         For Test Only.
         """
         if self.test_count > 5:
+            print('current time:', self.get_current_time())
             self.view_pos()
             print('vt_tradeids', self.vt_tradeids)
             self.test_count = 0
@@ -930,6 +933,12 @@ class FollowEngine(BaseEngine):
             if not contract:
                 self.positions.pop(symbol)
                 self.write_log(f"{symbol}已过期，清除成功。")
+
+    def get_follow_orderids(self, vt_tradeid: str):
+        """"""
+        if self.tradeid_orderids_dict.get(vt_tradeid) is None:
+            self.tradeid_orderids_dict[vt_tradeid] = list()
+        return self.tradeid_orderids_dict[vt_tradeid]
 
     def get_symbol_pos(self, vt_symbol: str):
         """
@@ -1319,7 +1328,9 @@ class FollowEngine(BaseEngine):
         req.price = self.convert_order_price(req.vt_symbol, req.direction, req.price, is_must_done)
         vt_orderids = self.convert_and_send_orders(req, is_must_done)
         if vt_orderids:
-            self.tradeid_orderids_dict[vt_tradeid] = vt_orderids
+            orderids_list = self.get_follow_orderids(vt_tradeid)
+            orderids_list.extend(vt_orderids)
+            # self.tradeid_orderids_dict[vt_tradeid] = vt_orderids
             
             if vt_tradeid.startswith('SYNC'):
                 order_prefix = "同步单"
@@ -1383,12 +1394,14 @@ class FollowEngine(BaseEngine):
 
     def cancel_all_order(self, vt_symbol: str = ""):
         """
-        Cancel all active orders or orders of vt_symbol in target gateway
+        Cancel all active orders or orders of vt_symbol in target gateway and generated by this app.
         """
         active_orders = self.main_engine.get_all_active_orders(vt_symbol)
 
         target_orders = [order for order in active_orders if order.gateway_name == self.target_gateway_name]
         for order in target_orders:
+            if not self.filter_target_not_follow(order.vt_orderid):
+                continue
             self.cancel_order(order.vt_orderid)
 
     def is_pos_exists(self, vt_symbol: str):
