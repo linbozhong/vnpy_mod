@@ -120,6 +120,7 @@ class FollowManager(QtWidgets.QWidget):
         self.follow_direction_combo.addItems(['正向跟随', '反向跟随'])
         self.follow_direction_combo.activated[str].connect(self.set_follow_direction)
         self.get_current_follow_direction()
+        self.follow_direction_combo.setEnabled(False)
 
         self.intraday_trading_combo = QtWidgets.QComboBox()
         self.intraday_trading_combo.addItems(['是', '否'])
@@ -388,7 +389,7 @@ class PosDeltaMonitor(BaseMonitor):
         "short_delta": {"display": "空差", "cell": BaseCell, "update": True},
         "net_delta": {"display": "净差", "cell": PnlCell, "update": True},
         "basic_delta": {"display": "底仓差", "cell": PnlCell, "update": True},
-        "source_traded_net": {"display": "AD净", "cell": PnlCell, "update": True},
+        "source_traded_net": {"display": "交易净", "cell": PnlCell, "update": True},
         # "target_traded_net": {"display": "BD净", "cell": PnlCell, "update": True},
         'lost_follow_net': {"display": "丢失", "cell": PnlCell, "update": True}
     }
@@ -549,14 +550,16 @@ class PosEditor(QtWidgets.QDialog):
 
         validator = QtGui.QIntValidator()
 
-        self.long_pos_line = QtWidgets.QLineEdit()
-        self.long_pos_line.setValidator(validator)
-
-        self.short_pos_line = QtWidgets.QLineEdit()
-        self.short_pos_line.setValidator(validator)
+        # self.long_pos_line = QtWidgets.QLineEdit()
+        # self.long_pos_line.setValidator(validator)
+        # self.short_pos_line = QtWidgets.QLineEdit()
+        # self.short_pos_line.setValidator(validator)
 
         self.basic_delta_line = QtWidgets.QLineEdit()
         self.basic_delta_line.setValidator(validator)
+
+        self.traded_net_line = QtWidgets.QLineEdit()
+        self.traded_net_line.setValidator(validator)
 
         self.lost_follow_line = QtWidgets.QLineEdit()
         self.lost_follow_line.setValidator(validator)
@@ -569,9 +572,10 @@ class PosEditor(QtWidgets.QDialog):
 
         form = QtWidgets.QFormLayout()
         form.addRow("合约代码", self.symbol_combo)
-        form.addRow("目标户多仓", self.long_pos_line)
-        form.addRow("目标户空仓", self.short_pos_line)
+        # form.addRow("目标户多仓", self.long_pos_line)
+        # form.addRow("目标户空仓", self.short_pos_line)
         form.addRow("底仓差", self.basic_delta_line)
+        form.addRow("交易净仓", self.traded_net_line)
         form.addRow("丢失净仓", self.lost_follow_line)
 
         hbox = QtWidgets.QHBoxLayout()
@@ -588,14 +592,16 @@ class PosEditor(QtWidgets.QDialog):
         Set symbol to be modified
         """
         self.modify_symbol = vt_symbol
-        target_long = self.follow_engine.get_pos(vt_symbol, 'target_long')
-        target_short = self.follow_engine.get_pos(vt_symbol, 'target_short')
+        # target_long = self.follow_engine.get_pos(vt_symbol, 'target_long')
+        # target_short = self.follow_engine.get_pos(vt_symbol, 'target_short')
         basic_delta = self.follow_engine.get_pos(vt_symbol, 'basic_delta')
+        traded_net = self.follow_engine.get_pos(vt_symbol, 'source_traded_net')
         lost_follow = self.follow_engine.get_pos(vt_symbol, 'lost_follow_net')
 
+        # self.long_pos_line.setText(str(target_long))
+        # self.short_pos_line.setText(str(target_short))
         self.basic_delta_line.setText(str(basic_delta))
-        self.long_pos_line.setText(str(target_long))
-        self.short_pos_line.setText(str(target_short))
+        self.traded_net_line.setText(str(traded_net))
         self.lost_follow_line.setText(str(lost_follow))
         self.write_log(f"选中合约{self.modify_symbol}")
 
@@ -607,13 +613,16 @@ class PosEditor(QtWidgets.QDialog):
 
     def modify(self):
         """"""
+        # new_long = self.long_pos_line.text()
+        # new_short = self.short_pos_line.text()
         new_basic_delta = self.basic_delta_line.text()
-        new_long = self.long_pos_line.text()
-        new_short = self.short_pos_line.text()
+        new_traded_net = self.traded_net_line.text()
         new_lost_follow = self.lost_follow_line.text()
+
+        # self.follow_engine.set_pos(self.modify_symbol, 'target_long', int(new_long))
+        # self.follow_engine.set_pos(self.modify_symbol, 'target_short', int(new_short))
         self.follow_engine.set_pos(self.modify_symbol, 'basic_delta', int(new_basic_delta))
-        self.follow_engine.set_pos(self.modify_symbol, 'target_long', int(new_long))
-        self.follow_engine.set_pos(self.modify_symbol, 'target_short', int(new_short))
+        self.follow_engine.set_pos(self.modify_symbol, 'source_traded_net', int(new_traded_net))
         self.follow_engine.set_pos(self.modify_symbol, 'lost_follow_net', int(new_lost_follow))
         self.follow_engine.save_follow_data()
         self.write_log(f"{self.modify_symbol}仓位修改成功")
