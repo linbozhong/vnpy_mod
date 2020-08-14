@@ -56,7 +56,7 @@ class FollowManager(QtWidgets.QWidget):
     def init_ui(self):
         """"""
         self.setWindowTitle(f"跟随交易 [{TRADER_DIR}]")
-        self.setMinimumSize(900, 750)
+        self.setMinimumSize(920, 750)
         self.setMaximumSize(1920, 1080)
 
         # create widgets
@@ -737,8 +737,12 @@ class OrderSettingEditor(QtWidgets.QDialog):
         is_chase_base_last = self.follow_engine.chase_base_last_order_price
         if is_chase_base_last:
             self.chase_base_last_order_combo.setCurrentIndex(0)
+            self.chase_base_price_combo.setEnabled(False)
+
         else:
             self.chase_base_last_order_combo.setCurrentIndex(1)
+            self.chase_base_price_combo.setEnabled(True)
+
 
     def change_base_price_editable(self, editable: int):
         if not editable:
@@ -792,7 +796,7 @@ class OrderSettingEditor(QtWidgets.QDialog):
 
     def set_chase_max_resend(self):
         """"""
-        text = self.chase_max_resend.text()
+        text = self.chase_resend_line.text()
         self.follow_engine.set_parameters('chase_max_resend', int(text))
         self.write_log(f"最大追价次数：{self.follow_engine.chase_max_resend} 设置成功")
 
@@ -863,9 +867,12 @@ class SkipContractEditor(QtWidgets.QDialog):
         self.filter_vol_combo.activated[str].connect(self.set_is_filter_vol)
         self.get_current_filter_vol()
 
+        validator = QtGui.QIntValidator()
         self.new_remove_line = QtWidgets.QLineEdit()
         self.new_intra_line = QtWidgets.QLineEdit()
+        
         self.new_order_vol_line = QtWidgets.QLineEdit()
+        self.new_order_vol_line.setValidator(validator)
 
         button_add = QtWidgets.QPushButton("添加禁止同步")
         button_add.clicked.connect(self.add)
@@ -1005,6 +1012,10 @@ class SkipContractEditor(QtWidgets.QDialog):
     def add_com(self):
         """"""
         commodity = self.new_intra_line.text()
+        if not commodity:
+            self.write_log(f"未输入日内品种代码")
+            return
+
         if commodity not in self.follow_engine.get_intraday_symbols():
             self.follow_engine.get_intraday_symbols().append(commodity)
             self.refresh_intra_list()
@@ -1028,6 +1039,10 @@ class SkipContractEditor(QtWidgets.QDialog):
 
     def add_order_volume(self):
         vol = self.new_order_vol_line.text()
+        if not vol:
+            self.write_log(f"未输入允许跟随的委托手数")
+            return
+
         if int(vol) not in self.follow_engine.get_order_vols_to_follow():
             self.follow_engine.get_order_vols_to_follow().append(int(vol))
             self.refresh_order_vol_white_list()
