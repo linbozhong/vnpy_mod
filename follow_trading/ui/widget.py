@@ -21,6 +21,7 @@ from ..engine import (
     FollowEngine,
     EVENT_FOLLOW_LOG,
     EVENT_FOLLOW_POS_DELTA,
+    EVENT_FOLLOW_MODIFY_POS,
     OrderBasePrice
 )
 
@@ -309,7 +310,7 @@ class FollowManager(QtWidgets.QWidget):
 
             self.sync_pos_button.setEnabled(True)
             self.close_hedged_pos_button.setEnabled(True)
-            self.modify_pos_button.setEnabled(False)
+            # self.modify_pos_button.setEnabled(False)
             self.set_skip_button.setEnabled(True)
 
             self.source_combo.setEnabled(False)
@@ -322,7 +323,9 @@ class FollowManager(QtWidgets.QWidget):
         if result:
             self.start_button.setEnabled(True)
             self.stop_button.setEnabled(False)
-            self.modify_pos_button.setEnabled(True)
+            self.sync_pos_button.setEnabled(False)
+            self.close_hedged_pos_button.setEnabled(False)
+            # self.modify_pos_button.setEnabled(True)
 
     def validate_vt_symbol(self, vt_symbol: str):
         """"""
@@ -621,11 +624,23 @@ class PosEditor(QtWidgets.QDialog):
 
         # self.follow_engine.set_pos(self.modify_symbol, 'target_long', int(new_long))
         # self.follow_engine.set_pos(self.modify_symbol, 'target_short', int(new_short))
-        self.follow_engine.set_pos(self.modify_symbol, 'basic_delta', int(new_basic_delta))
-        self.follow_engine.set_pos(self.modify_symbol, 'source_traded_net', int(new_traded_net))
-        self.follow_engine.set_pos(self.modify_symbol, 'lost_follow_net', int(new_lost_follow))
-        self.follow_engine.save_follow_data()
-        self.write_log(f"{self.modify_symbol}仓位修改成功")
+
+        modify_pos_dict = dict()
+        modify_pos_dict['basic_delta'] = int(new_basic_delta)
+        modify_pos_dict['source_traded_net'] = int(new_traded_net)
+        modify_pos_dict['lost_follow_net'] = int(new_lost_follow)
+        modify_pos_tuple = (self.modify_symbol, modify_pos_dict)
+
+        event = Event(EVENT_FOLLOW_MODIFY_POS, modify_pos_tuple)
+        self.follow_engine.event_engine.put(event)
+
+        # self.follow_engine.set_pos(self.modify_symbol, 'basic_delta', int(new_basic_delta))
+        # self.follow_engine.set_pos(self.modify_symbol, 'source_traded_net', int(new_traded_net))
+        # self.follow_engine.set_pos(self.modify_symbol, 'lost_follow_net', int(new_lost_follow))
+
+        # self.follow_engine.put_pos_delta_event(self.modify_symbol)
+        # self.follow_engine.save_follow_data()
+        # self.write_log(f"{self.modify_symbol}仓位修改成功")
 
     def write_log(self, msg: str):
         """"""

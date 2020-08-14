@@ -76,6 +76,7 @@ APP_NAME = "FollowTrading"
 EVENT_FOLLOW_LOG = "eFollowLog"
 EVENT_FOLLOW_POS_DELTA = "eFollowPosDelta"
 EVENT_FOLLOW_ORDER = "eFollowOrder"
+EVENT_FOLLOW_MODIFY_POS = "eFollowModifyPos"
 
 DAYLIGHT_MARKET_END = time(15, 2)
 NIGHT_MARKET_BEGIN = time(20, 45)
@@ -142,8 +143,8 @@ class FollowEngine(BaseEngine):
         self.sync_order_ref = 0
         self.tradeid_orderids_dict = {}         # vt_tradeid: list[vt_orderid]
         self.positions = {}
-        # self.target_positions = {}
 
+        self.pre_subscribe_symbols = set()
         self.vt_tradeids = set()
         self.limited_prices = {}
         self.latest_prices = {}
@@ -225,20 +226,7 @@ class FollowEngine(BaseEngine):
         self.load_follow_data()
 
     def get_current_time(self):
-        """
-        Get current time when market is opening. If market closed please use datetime.now()
-        """
-        # if self.run_type == FollowRunType.LIVE:
-        #     if self.tick_time is None:
-        #         now = datetime.now()
-        #     else:
-        #         if datetime.now() - self.tick_time > timedelta(seconds=self.filter_trade_timeout):
-        #             self.write_log("系统时间超过行情时间1分钟，可能是收市或行情中断，开始使用系统时间")
-        #             now = datetime.now()
-        #         else:
-        #             now = self.tick_time
-        # else:
-        #     now = datetime.now()
+        """"""
         return datetime.now()
 
     def set_gateways(self, source_name: str, target_name: str):
@@ -590,6 +578,7 @@ class FollowEngine(BaseEngine):
         self.event_engine.register(EVENT_POSITION, self.process_position_event)
         self.event_engine.register(EVENT_TIMER, self.process_timer_event)
         self.event_engine.register(EVENT_FOLLOW_ORDER, self.process_follow_order_event)
+        self.event_engine.register(EVENT_FOLLOW_MODIFY_POS, self.process_follow_modify_pos_event)
 
     def process_tick_event(self, event: Event):
         """"""
@@ -727,6 +716,21 @@ class FollowEngine(BaseEngine):
             msg = f"处理FollowOrder事件，触发异常：\n{traceback.format_exc()}"
             self.write_log(msg)
 
+    def process_follow_modify_pos_event(self, event: Event):
+        try:
+            vt_symbol, modify_pos_dict = event.data
+
+            self.set_pos(vt_symbol, 'basic_delta', modify_pos_dict['basic_delta'])
+            self.set_pos(vt_symbol, 'source_traded_net', modify_pos_dict['source_traded_net'])
+            self.set_pos(vt_symbol, 'lost_follow_net', modify_pos_dict['lost_follow_net'])
+
+            self.put_pos_delta_event(vt_symbol)
+            self.save_follow_data()
+            self.write_log(f"{vt_symbol}仓位修改成功")
+        except:
+            msg = f"处理FollowModifyPos事件，触发异常：\n{traceback.format_exc()}"
+            self.write_log(msg)
+
     def process_position_event(self, event: Event):
         """
         update source gateway position and target gateway offset converter position
@@ -743,7 +747,6 @@ class FollowEngine(BaseEngine):
             else:
                 self.offset_converter.update_position(position)
                 self.update_target_pos_by_pos(position)
-            # self.put_pos_delta_event(position.vt_symbol)
         except:  # noqa
             msg = f"处理持仓事件，触发异常：\n{traceback.format_exc()}"
             self.write_log(msg)
@@ -806,8 +809,12 @@ class FollowEngine(BaseEngine):
         Pre subscribe symbol in source gateway position to speed up following.
         """
         vt_symbol = position.vt_symbol
+        if vt_symbol in self.pre_subscribe_symbols:
+            return
+
         if not self.is_price_inited(vt_symbol):
             if self.subscribe(vt_symbol):
+                self.pre_subscribe_symbols.add(vt_symbol)
                 self.write_log(f"{vt_symbol}行情订阅请求已发送。")
 
     def cancel_timeout_order(self):
@@ -1252,6 +1259,7 @@ class FollowEngine(BaseEngine):
             price=trade.price,
             offset=trade.offset
         )
+        req_net_vol = self.get_req_net_vol(req) * self.multiples
         req.volume = req.volume * self.multiples
 
         if self.inverse_follow:
@@ -1261,13 +1269,14 @@ class FollowEngine(BaseEngine):
         if self.is_intraday_trading and is_must_done:
             symbol_pos = self.get_symbol_pos(vt_symbol)
             lost_folow_vol = symbol_pos['lost_follow_net']
-            req_net_vol = self.get_req_net_vol(req) * self.multiples
             if lost_folow_vol != 0:
                 if req.volume > abs(lost_folow_vol):
-                    symbol_pos['lost_follow_net'] = 0
+                    # Must calculate before update lost follow net
                     to_close_vol = symbol_pos['lost_follow_net'] + req_net_vol
-                    self.put_pos_delta_event(vt_symbol)
 
+                    symbol_pos['lost_follow_net'] = 0
+                    self.put_pos_delta_event(vt_symbol)
+                    
                     req.volume = abs(to_close_vol)
                 else:
                     symbol_pos['lost_follow_net'] += req_net_vol
