@@ -141,7 +141,7 @@ class FollowManager(QtWidgets.QWidget):
         self.pos_delta_monitor = PosDeltaMonitor(self.main_engine, self.event_engine)
         self.log_monitor = LogMonitor(self.main_engine, self.event_engine)
 
-        # set layout
+        # Set layout
         form = QtWidgets.QFormLayout()
         form.addRow("标准户接口", self.source_combo)
         form.addRow("跟单户接口", self.target_combo)
@@ -289,20 +289,6 @@ class FollowManager(QtWidgets.QWidget):
             return
         self.follow_engine.set_gateways(source, target)
 
-        # follow_direction = self.follow_direction_combo.currentText()
-        # if follow_direction == '正向跟随':
-        #     is_inverse = False
-        # else:
-        #     is_inverse = True
-        # self.follow_engine.set_parameters('inverse_follow', is_inverse)
-
-        # order_type = self.order_type_combo.currentText()
-        # self.follow_engine.set_parameters('order_type', OrderType(order_type))
-
-        # self.follow_engine.set_parameters('multiples', int(self.multiples_line.text()))
-        # self.follow_engine.set_parameters('tick_add', int(self.tickout_line.text()))
-        # self.follow_engine.set_parameters('filter_trade_timeout', int(self.timeout_line.text()))
-
         result = self.follow_engine.start()
         if result:
             self.start_button.setEnabled(False)
@@ -393,7 +379,6 @@ class PosDeltaMonitor(BaseMonitor):
         "net_delta": {"display": "净差", "cell": PnlCell, "update": True},
         "basic_delta": {"display": "底仓差", "cell": PnlCell, "update": True},
         "source_traded_net": {"display": "交易净", "cell": PnlCell, "update": True},
-        # "target_traded_net": {"display": "BD净", "cell": PnlCell, "update": True},
         'lost_follow_net': {"display": "丢失", "cell": PnlCell, "update": True}
     }
 
@@ -438,12 +423,12 @@ class SyncPosEditor(QtWidgets.QDialog):
         self.setWindowTitle("同步仓位")
         self.setMinimumWidth(300)
 
-        # select symbol widget
+        # Select symbol widget
         self.sync_symbol_combo = ComboBox()
         self.sync_symbol_combo.pop_show.connect(self.refresh_symbol_list)
         self.sync_symbol_combo.activated[str].connect(self.set_sync_symbol)
 
-        # sync action button
+        # Sync action button
         self.sync_open_button = QtWidgets.QPushButton("单合约开仓同步")
         self.sync_open_button.clicked.connect(self.sync_open)
 
@@ -470,7 +455,7 @@ class SyncPosEditor(QtWidgets.QDialog):
                     self.sync_basic_button]:
             btn.setFixedHeight(btn.sizeHint().height() * 1.5)
 
-        # set layout
+        # Set layout
         form_sync = QtWidgets.QFormLayout()
         form_sync.addRow("同步合约", self.sync_symbol_combo)
         form_sync.addRow(self.sync_open_button)
@@ -622,9 +607,6 @@ class PosEditor(QtWidgets.QDialog):
         new_traded_net = self.traded_net_line.text()
         new_lost_follow = self.lost_follow_line.text()
 
-        # self.follow_engine.set_pos(self.modify_symbol, 'target_long', int(new_long))
-        # self.follow_engine.set_pos(self.modify_symbol, 'target_short', int(new_short))
-
         modify_pos_dict = dict()
         modify_pos_dict['basic_delta'] = int(new_basic_delta)
         modify_pos_dict['source_traded_net'] = int(new_traded_net)
@@ -633,14 +615,6 @@ class PosEditor(QtWidgets.QDialog):
 
         event = Event(EVENT_FOLLOW_MODIFY_POS, modify_pos_tuple)
         self.follow_engine.event_engine.put(event)
-
-        # self.follow_engine.set_pos(self.modify_symbol, 'basic_delta', int(new_basic_delta))
-        # self.follow_engine.set_pos(self.modify_symbol, 'source_traded_net', int(new_traded_net))
-        # self.follow_engine.set_pos(self.modify_symbol, 'lost_follow_net', int(new_lost_follow))
-
-        # self.follow_engine.put_pos_delta_event(self.modify_symbol)
-        # self.follow_engine.save_follow_data()
-        # self.write_log(f"{self.modify_symbol}仓位修改成功")
 
     def write_log(self, msg: str):
         """"""
@@ -757,7 +731,6 @@ class OrderSettingEditor(QtWidgets.QDialog):
         else:
             self.chase_base_last_order_combo.setCurrentIndex(1)
             self.chase_base_price_combo.setEnabled(True)
-
 
     def change_base_price_editable(self, editable: int):
         if not editable:
@@ -1102,6 +1075,7 @@ class SkipContractEditor(QtWidgets.QDialog):
     def write_log(self, msg: str):
         """"""
         self.follow_engine.write_log(msg)
+
 
 class CloseHedgedDialog(QtWidgets.QDialog):
     def __init__(self, parent: QtWidgets.QWidget, follow_engine: FollowEngine):

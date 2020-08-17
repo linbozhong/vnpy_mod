@@ -73,6 +73,7 @@ class OrderBasePrice(Enum):
 
 
 APP_NAME = "FollowTrading"
+
 EVENT_FOLLOW_LOG = "eFollowLog"
 EVENT_FOLLOW_POS_DELTA = "eFollowPosDelta"
 EVENT_FOLLOW_ORDER = "eFollowOrder"
@@ -98,6 +99,7 @@ class FollowEngine(BaseEngine):
         self.target_gateway_name = "RPC"
         self.filter_trade_timeout = 60
         self.cancel_order_timeout = 10
+        self.max_cancel = 3
         self.multiples = 1
 
         self.tick_add = 5
@@ -110,20 +112,20 @@ class FollowEngine(BaseEngine):
         self.chase_order_timeout = 10
         self.chase_max_resend = 3
 
+        self.is_intraday_trading = True
         self.inverse_follow = False
         self.order_type = OrderType.LIMIT
 
         self.single_max = 1000
-        self.intraday_symbols = ['IF', 'IC', 'IH']
         self.single_max_dict = {
             "IF": 20,
             "IC": 20,
             "IH": 20
         }
 
+        self.intraday_symbols = ['IF', 'IC', 'IH']
         self.skip_contracts = []
-
-        self.is_intraday_trading = True
+        
         self.is_filter_order_vol = True
         self.order_volumes_to_follow = [1, 2]
 
@@ -131,33 +133,28 @@ class FollowEngine(BaseEngine):
         self.run_type = FollowRunType.LIVE
         self.test_symbol = 'rb2001.SHFE'
         self.test_count = 0
-
         self.tick_time = None
 
         # Variables
         self.gateway_names = None
         self.is_active = False
+
         self.follow_data = {}
         self.follow_setting = {}
 
-        self.sync_order_ref = 0
+        # Main run data
         self.tradeid_orderids_dict = {}         # vt_tradeid: list[vt_orderid]
         self.positions = {}
+        self.vt_tradeids = set()
+        self.due_out_req_list = []
 
         self.pre_subscribe_symbols = set()
-        self.vt_tradeids = set()
         self.limited_prices = {}
         self.latest_prices = {}
-        self.due_out_req_list = []
-        self.refresh_pos_interval = 0
 
-        self.is_hedged_closed = False
-        self.is_trade_saved = False
-
-        # traded net variables
+        # Traded net variables
         self.intraday_orderids = set()
         self.open_orderids = set()
-        # self.lost_follow_dict = {}            # vt_symbol: int
         
         # Chase order variables
         self.chase_orderids = set()
@@ -168,7 +165,11 @@ class FollowEngine(BaseEngine):
         self.active_order_set = set()
         self.active_order_counter = {}          # vt_orderid: int
         self.cancel_counter = {}                # vt_orderid: int
-        self.max_cancel = 3
+
+        self.is_hedged_closed = False
+        self.is_trade_saved = False
+        self.sync_order_ref = 0
+        self.refresh_pos_interval = 0
 
         self.offset_converter = OffsetConverter(main_engine)
 
@@ -187,7 +188,6 @@ class FollowEngine(BaseEngine):
                            'chase_order_timeout', 'chase_order_tick_add', 'chase_max_resend',
                            'is_intraday_trading', 'is_filter_order_vol', 'order_volumes_to_follow'
                            ]
-
         self.variables = ['tradeid_orderids_dict', 'positions']
         self.clear_variables = ['tradeid_orderids_dict']
         self.pos_key = [
@@ -206,11 +206,12 @@ class FollowEngine(BaseEngine):
         Init engine.
         """
         self.write_log("参数和数据读取成功。")
-        # Update vt_tradeid firstly
+
+        # Update vt_tradeid firstly, very important
         self.update_tradeids()
         print('vt_tradeids', self.vt_tradeids)
-
         self.register_event()
+
         if self.run_type == FollowRunType.TEST:
             self.write_log("测试模式：订阅行情以获取最新时间。")
             self.subscribe(self.test_symbol)
@@ -255,7 +256,6 @@ class FollowEngine(BaseEngine):
         """
         Get connected gateway names.
         """
-        # If not self.gateway_names:
         accounts = self.main_engine.get_all_accounts()
         print(accounts)
         self.gateway_names = [account.gateway_name for account in accounts]
@@ -302,7 +302,7 @@ class FollowEngine(BaseEngine):
         """
         for name in self.parameters:
             if name in ['order_type', 'run_type', 'chase_base_price']:
-                self.follow_setting[name] = getattr(self, name).value
+                self.follow_setting[name] = getattr(self, name).value   # noqa
             else:
                 self.follow_setting[name] = getattr(self, name)
         save_json(self.setting_filename, self.follow_setting)
@@ -613,7 +613,6 @@ class FollowEngine(BaseEngine):
                     self.active_order_counter.pop(vt_orderid)
                     self.active_order_set.remove(vt_orderid)
 
-                # If intraday order canceled, target net pos need refresh
                 if order.status == Status.CANCELLED:
                     # Add unsucessfully follow order to Lost
                     if vt_orderid in self.open_orderids:
@@ -682,12 +681,11 @@ class FollowEngine(BaseEngine):
                     self.send_order(req, trade.vt_tradeid, is_must_done)
             else:
                 self.offset_converter.update_trade(trade)
+                self.update_target_pos_by_trade(trade)
 
                 if not self.filter_target_not_follow(trade.vt_orderid):
                     self.write_log(f"{trade.vt_tradeid} 不是跟随策略的成交单。")
                     return
-
-                self.update_target_pos_by_trade(trade)
 
                 self.save_follow_data()
                 self.write_log(f"{trade.vt_symbol}仓位更新成功。")
@@ -801,7 +799,7 @@ class FollowEngine(BaseEngine):
                     open_trade.volume = abs(trade_net_vol + source_traded_net)
                     trades.append(self.get_trade_dict(open_trade, False))
 
-        print(trades)
+        # print(trades)
         return trades
 
     def pre_subscribe(self, position: PositionData):
@@ -1218,7 +1216,7 @@ class FollowEngine(BaseEngine):
             else:
                 bid_price = latest_prices['bid_price']
 
-        # print('ask:', ask_price, 'bid:', bid_price, 'price:', price)
+        print('ask:', ask_price, 'bid:', bid_price, 'price:', price)
         contract = self.main_engine.get_contract(vt_symbol)
         if direction == Direction.LONG:
             if not price:
@@ -1352,13 +1350,11 @@ class FollowEngine(BaseEngine):
         """
         Send and record result.
         """
-        # self.write_log(f"{vt_tradeid}核验通过分流完成，开始进行委托单处理。")
         req.price = self.convert_order_price(req.vt_symbol, req.direction, req.price, is_must_done)
         vt_orderids = self.convert_and_send_orders(req, is_must_done)
         if vt_orderids:
             orderids_list = self.get_follow_orderids(vt_tradeid)
             orderids_list.extend(vt_orderids)
-            # self.tradeid_orderids_dict[vt_tradeid] = vt_orderids
             
             if vt_tradeid.startswith('SYNC'):
                 order_prefix = "同步单"
