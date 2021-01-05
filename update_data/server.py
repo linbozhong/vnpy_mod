@@ -102,6 +102,8 @@ class DataRpcServer(RpcServer):
         self.register(self.echo_test)
         self.register(self.get_update_symbol)
         self.register(self.save_to_database)
+        self.register(self.delete_bar_data)
+        self.register(self.clean_data_by_symbol)
 
     def run_server(self):
         sock = Listener(address=(self.host, self.port), authkey=self.authkey)
@@ -152,6 +154,16 @@ class DataRpcServer(RpcServer):
                 )
                 res_list.append(bar)
         database_manager.save_bar_data(res_list)
+
+    @staticmethod
+    def delete_bar_data(symbol: str, exchange: str, interval: str) -> int:
+        interval = INTERVAL_RQ2VT[interval]
+        exchange = Exchange(exchange)
+        return database_manager.delete_bar_data(symbol, exchange, interval)
+
+    @staticmethod
+    def clean_data_by_symbol(symbol: str):
+        database_manager.clean(symbol)
 
     @staticmethod
     def connect_test():

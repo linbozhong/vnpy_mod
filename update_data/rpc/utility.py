@@ -91,11 +91,12 @@ def to_rq_symbol(symbol: str, exchange: Exchange) -> str:
     return rq_symbol
 
 
-def handle_df(df: DataFrame, rq_interval:str) -> DataFrame:
+def handle_df(df: DataFrame, rq_interval:str, need_adjust:bool = True) -> DataFrame:
     adjustment = INTERVAL_ADJUSTMENT_MAP[rq_interval]
     
     df["datetime"] = df.index
-    df["datetime"] = df["datetime"] - adjustment
+    if need_adjust:
+        df["datetime"] = df["datetime"] - adjustment
     
     if rq_interval == "60m":
         mask = df.datetime.map(is_hour_datetime)
