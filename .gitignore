@@ -141,3 +141,4 @@ optionMaster/SEC_connect.json
 optionMaster/SEC_connect_yh.json
 sync/*.json
 update_data/*.json
+update_data/data/*.json
