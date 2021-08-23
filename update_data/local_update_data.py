@@ -29,6 +29,29 @@ INTERVAL_ADJUSTMENT_MAP = {
 }
 
 
+def load_local_json(filename: str) -> dict:
+    filepath = Path.cwd().joinpath(filename)
+
+    if filepath.exists():
+        with open(filepath, mode="r", encoding="UTF-8") as f:
+            data = json.load(f)
+        return data
+    else:
+        save_local_json(filename, {})
+        return {}
+
+
+def save_local_json(filename: str, data) -> None:
+    filepath = Path.cwd().joinpath(filename)
+    with open(filepath, mode="w+", encoding="UTF-8") as f:
+        json.dump(
+            data,
+            f,
+            indent=4,
+            ensure_ascii=False
+        )
+
+
 def to_rq_symbol(symbol: str, exchange: Exchange) -> str:
     """
     CZCE product of RQData has symbol like "TA1905" while
@@ -190,6 +213,15 @@ def save_all_data(source_interval: str, symbols: Optional[Sequence[str]] = None)
         print(f"{vt_symbol}合约数据保存成功")
 
 
+def save_all_data_from_rqdata_json():
+    downloaded_data = load_local_json("daily_update_bars.json")
+    for vt_symbol, value in downloaded_data.items():
+        source_interval = value['rq_interval']
+        data_dict = value['data']
+        save_to_database(data_dict, vt_symbol, source_interval)
+        print(f"{vt_symbol}合约数据保存成功")
+
+
 def delete_all_bar(source_interval: str, symbols: Optional[Sequence[str]] = None):
     # bar number is different. so if switch data source, it need delete old data.
     if symbols is None:
@@ -202,14 +234,13 @@ def delete_all_bar(source_interval: str, symbols: Optional[Sequence[str]] = None
 
 
 if __name__ == '__main__':
-    # server = DataRpcServer()
+    # get data from opendatatools
+#     source_interval = "60m"
+#     symbols = get_update_symbol()
+#     print(symbols)
+# #         symbols = ['ni2105.SHFE']
+#     save_all_data(source_interval, symbols)
 
-    # server.run_server()
-    # print(server.get_update_symbol())
 
-    source_interval = "60m"
-
-    symbols = get_update_symbol()
-    print(symbols)
-#         symbols = ['ni2105.SHFE']
-    save_all_data(source_interval, symbols)
+    # get data from rqdata downloaded json
+    save_all_data_from_rqdata_json()
