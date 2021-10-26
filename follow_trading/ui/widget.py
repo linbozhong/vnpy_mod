@@ -645,13 +645,10 @@ class OrderSettingEditor(QtWidgets.QDialog):
         self.chase_combo = QtWidgets.QComboBox()
         self.chase_combo.addItems(['是', '否'])
         self.chase_combo.activated[str].connect(self.set_is_chase)
-        self.get_current_chase()
 
         self.chase_base_last_order_combo = QtWidgets.QComboBox()
         self.chase_base_last_order_combo.addItems(['是', '否'])
         self.chase_base_last_order_combo.activated[str].connect(self.set_chase_base_last)
-        self.chase_base_last_order_combo.currentIndexChanged[int].connect(self.change_base_price_editable)
-        self.get_current_chase_base_last()
 
         validator = QtGui.QIntValidator()
         self.chase_timeout_line = QtWidgets.QLineEdit(str(self.follow_engine.chase_order_timeout))
@@ -681,6 +678,11 @@ class OrderSettingEditor(QtWidgets.QDialog):
         self.single_max_line = QtWidgets.QLineEdit(str(self.follow_engine.single_max))
         self.single_max_line.setValidator(validator)
         self.single_max_line.editingFinished.connect(self.set_single_max)
+
+        self.chase_combo.currentIndexChanged[int].connect(self.change_chase_op_editable)
+        self.get_current_chase()
+        self.chase_base_last_order_combo.currentIndexChanged[int].connect(self.change_base_price_editable)
+        self.get_current_chase_base_last()
 
         self.save_setting_button = QtWidgets.QPushButton("保存设置")
         self.save_setting_button.clicked.connect(self.save_setting)
@@ -738,6 +740,19 @@ class OrderSettingEditor(QtWidgets.QDialog):
         else:
             self.chase_base_price_combo.setEnabled(True)
 
+    def change_chase_op_editable(self, is_chase: int):
+        print(f'is chase:{is_chase}')
+        if is_chase == 0:
+            self.chase_base_last_order_combo.setEnabled(True)
+            self.chase_timeout_line.setEnabled(True)
+            self.chase_tickadd_line.setEnabled(True)
+            self.chase_resend_line.setEnabled(True)
+        else:
+            self.chase_base_last_order_combo.setEnabled(False)
+            self.chase_timeout_line.setEnabled(False)
+            self.chase_tickadd_line.setEnabled(False)
+            self.chase_resend_line.setEnabled(False)
+
     def set_order_type(self, order_type: str):
         """"""
         if order_type == "限价":
@@ -757,8 +772,16 @@ class OrderSettingEditor(QtWidgets.QDialog):
         """"""
         if chase_flag == "是":
             self.follow_engine.set_parameters('is_chase_order', True)
+            self.chase_base_last_order_combo.setEnabled(True)
+            self.chase_timeout_line.setEnabled(True)
+            self.chase_tickadd_line.setEnabled(True)
+            self.chase_resend_line.setEnabled(True)
         else:
             self.follow_engine.set_parameters('is_chase_order', False)
+            self.chase_base_last_order_combo.setEnabled(False)
+            self.chase_timeout_line.setEnabled(False)
+            self.chase_tickadd_line.setEnabled(False)
+            self.chase_resend_line.setEnabled(False)
         self.write_log(f"是否追单：{self.follow_engine.is_chase_order}")
 
     def set_chase_base_last(self, chase_flag: str):
@@ -768,7 +791,7 @@ class OrderSettingEditor(QtWidgets.QDialog):
         else:
             self.follow_engine.set_parameters('chase_base_last_order_price', False)
             self.chase_base_price_combo.setEnabled(True)
-        self.write_log(f"追价是否基于上笔委托价格：{self.follow_engine.is_chase_order}")
+        self.write_log(f"追价是否基于上笔委托价格：{self.follow_engine.chase_base_last_order_price}")
 
     def set_chase_order_timeout(self):
         """"""
