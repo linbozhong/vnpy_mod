@@ -371,7 +371,12 @@ class FollowEngine(BaseEngine):
             d["exchange"] = d["exchange"].value
             d["direction"] = d["direction"].value
             d["offset"] = d["offset"].value
-            d['dt'] = f"{today} {d['time']}"
+
+            try:
+                d['dt'] = f"{today} {d['time']}"
+            except KeyError:
+                d['dt'] = d['datetime'].strftime("%Y%m%d %H:%M:%S")
+
             d['date'] = f"{today}"
             d.pop("vt_symbol")
             trade_list.append(d)
@@ -509,6 +514,19 @@ class FollowEngine(BaseEngine):
         d['trade'] = trade
         d['is_must_done'] = is_must_done
         return d
+
+    @staticmethod
+    def get_trade_time(trade: TradeData):
+        """
+        Get trade time for compartility with old version
+        """
+        try:
+            trade_time = trade.time
+        except AttributeError:
+            trade_time = trade.datetime.strftime("%H:%M:%S")
+        
+        return trade_time
+
 
     @staticmethod
     def get_trade_type(trade: TradeData):
@@ -1086,10 +1104,10 @@ class FollowEngine(BaseEngine):
         Because trade is not in self.vt_tradeids(if app don't restart). so it can't be filtered by self.vt_tradeids
         """
         now = self.get_current_time()
-        trade_time = datetime.strptime(trade.time, '%H:%M:%S')
+        trade_time = datetime.strptime(self.get_trade_time(trade), '%H:%M:%S')
         trade_time = trade_time.replace(year=now.year, month=now.month, day=now.day)
         if now - trade_time > timedelta(seconds=self.filter_trade_timeout):
-            self.write_log(f"{trade.vt_tradeid} 成交时间：{trade.time} 超过跟单有效期。")
+            self.write_log(f"{trade.vt_tradeid} 成交时间：{self.get_trade_time(trade)} 超过跟单有效期。")
             return True
         else:
             return False
