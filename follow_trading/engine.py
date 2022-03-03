@@ -638,7 +638,13 @@ class FollowEngine(BaseEngine):
                     print("已从保留委托队列中移除")
 
                     # 开始重新计算撤单超时
+                    # 委托模式下，超价会导致信号户未成交而跟单户成交的状况，要先判断是否成交
                     for vt_orderid in self.get_follow_orderids(order.vt_orderid):
+                        order_ = self.main_engine.get_order(vt_orderid)
+                        if not order_.is_active():
+                            print(f"{vt_orderid}已经不是活动委托")
+                            continue
+
                         self.active_order_set.add(vt_orderid)
                         self.active_order_counter[vt_orderid] = 0
                         self.cancel_counter[vt_orderid] = 0
@@ -656,6 +662,7 @@ class FollowEngine(BaseEngine):
         try:
             order = event.data
             vt_orderid = order.vt_orderid
+
             if order.gateway_name == self.source_gateway_name:
                 # print(order)
 
@@ -689,7 +696,6 @@ class FollowEngine(BaseEngine):
                     print("已加入保留委托列表")
                     self.orderid_keep_hang.add(order.vt_orderid)
 
-
                 if order.status == Status.CANCELLED:
                     # 源户主动撤单，先把委托单从追单列表中移除
                     orders = self.get_follow_orderids(order.vt_orderid)
@@ -706,47 +712,50 @@ class FollowEngine(BaseEngine):
                             self.orderid_keep_hang.remove(order_id)
 
             # 处理跟单户委托
+            if order.gateway_name == self.target_gateway_name:
+                # print(order)
+            
+                # Update offset converter
+                self.offset_converter.update_order(order)
+
+                # Filter non-follow order
+                if not self.filter_target_not_follow(order.vt_orderid):
+                    # self.write_log(f"{order.vt_orderid}不是跟随策略产生的委托。")
+                    return
+
+                if order.is_active():
+                    # 委托模式下，若允许保留委托单，则不做撤单计时
+                    if self.follow_based == FollowBaseMode.BASE_ORDER:
+                        signal_orderid = self.orderid_to_signal_orderid.get(order.vt_orderid)
+                        if signal_orderid and signal_orderid in self.orderid_keep_hang:
+                            print("属于保留委托，不执行撤单超时计算")
+                            return 
+
+                    self.active_order_set.add(vt_orderid)
+                    self.active_order_counter[vt_orderid] = 0
+                    self.cancel_counter[vt_orderid] = 0
+                else:
+                    if vt_orderid in self.active_order_set:
+                        self.active_order_counter.pop(vt_orderid)
+                        self.active_order_set.remove(vt_orderid)
+                        # print(f'remove {vt_orderid} from calculate time')
+
+                    if order.status == Status.CANCELLED:
+                        # Add unsucessfully follow order to Lost
+                        if vt_orderid in self.open_orderids:
+                            self.add_lost_follow(order)
                         
-            # Update offset converter
-            self.offset_converter.update_order(order)
-
-            # Filter non-follow order
-            if not self.filter_target_not_follow(order.vt_orderid):
-                # self.write_log(f"{order.vt_orderid}不是跟随策略产生的委托。")
-                return
-
-            if order.is_active():
-                # 委托模式下，若允许保留委托单，则不做撤单计时
-                if self.follow_based == FollowBaseMode.BASE_ORDER:
-                    signal_orderid = self.orderid_to_signal_orderid.get(order.vt_orderid)
-                    if signal_orderid and signal_orderid in self.orderid_keep_hang:
-                        print("属于保留委托，不执行撤单超时计算")
-                        return 
-
-                self.active_order_set.add(vt_orderid)
-                self.active_order_counter[vt_orderid] = 0
-                self.cancel_counter[vt_orderid] = 0
-            else:
-                if vt_orderid in self.active_order_set:
-                    self.active_order_counter.pop(vt_orderid)
-                    self.active_order_set.remove(vt_orderid)
-
-                if order.status == Status.CANCELLED:
-                    # Add unsucessfully follow order to Lost
-                    if vt_orderid in self.open_orderids:
-                        self.add_lost_follow(order)
-                    
-                    # Resend order if open chase order
-                    if vt_orderid in self.chase_orderids:
-                        ancestor_orderid = self.chase_ancestor_dict.get(vt_orderid)
-                        resend_count = self.chase_resend_count_dict.get(ancestor_orderid)
-                        if resend_count < self.chase_max_resend:
-                            self.resend_order(order, self.chase_base_last_order_price)
-                        else:
-                            self.write_log(f"原始委托{ancestor_orderid}超过最大追单次数。")
-                            # send new order directly and will not cancle
-                            if self.is_keep_order_after_chase:
-                                self.direct_send_base_order(order)
+                        # Resend order if open chase order
+                        if vt_orderid in self.chase_orderids:
+                            ancestor_orderid = self.chase_ancestor_dict.get(vt_orderid)
+                            resend_count = self.chase_resend_count_dict.get(ancestor_orderid)
+                            if resend_count < self.chase_max_resend:
+                                self.resend_order(order, self.chase_base_last_order_price)
+                            else:
+                                self.write_log(f"原始委托{ancestor_orderid}超过最大追单次数。")
+                                # send new order directly and will not cancle
+                                if self.is_keep_order_after_chase:
+                                    self.direct_send_base_order(order)
         except:  # noqa
             msg = f"处理委托事件，触发异常：\n{traceback.format_exc()}"
             self.write_log(msg)
@@ -949,7 +958,7 @@ class FollowEngine(BaseEngine):
         """
         Cancel active order if timeout exceed specified value.
         """
-        for vt_orderid, counter in self.active_order_counter.items():
+        for vt_orderid, counter in copy(self.active_order_counter).items():
             print("counter:", vt_orderid, counter)
             if counter is None:
                 continue
