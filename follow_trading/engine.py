@@ -2,12 +2,11 @@ import pickle
 import traceback
 import pandas as pd
 
-from collections import defaultdict
 from datetime import datetime, timedelta, time
 from enum import Enum
 from copy import copy
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 from vnpy.event import EventEngine, Event
 from vnpy.trader.engine import BaseEngine, MainEngine
@@ -72,6 +71,11 @@ class OrderBasePrice(Enum):
     GOOD_FOR_SELF = "挂单价"
 
 
+class FollowBaseMode(Enum):
+    BASE_ORDER = "跟随委托"
+    BASE_TRADE = "跟随成交"
+
+
 APP_NAME = "FollowTrading"
 
 EVENT_FOLLOW_LOG = "eFollowLog"
@@ -101,6 +105,9 @@ class FollowEngine(BaseEngine):
         self.cancel_order_timeout = 10
         self.max_cancel = 3
         self.multiples = 1
+        self.follow_based = FollowBaseMode.BASE_TRADE
+
+        self.sync_base_price = OrderBasePrice.GOOD_FOR_OTHER
 
         self.tick_add = 5
         self.must_done_tick_add = 25
@@ -111,6 +118,7 @@ class FollowEngine(BaseEngine):
         self.chase_order_tick_add = 5
         self.chase_order_timeout = 10
         self.chase_max_resend = 3
+        self.is_keep_order_after_chase = False
 
         self.is_intraday_trading = True
         self.inverse_follow = False
@@ -147,7 +155,18 @@ class FollowEngine(BaseEngine):
         self.positions = {}
         self.vt_tradeids = set()
         self.due_out_req_list = []
+        self.orderid_to_signal_orderid = {}     # vt_orderid: vt_orderid or vt_tradeid
 
+        # Based order mode
+        self.vt_accepted_orderids = set()
+
+        # self.orderid_orderid_dict = {}          # vt_orderid in source : vt_orderid in target
+        self.orderid_keep_hang = set()
+        # self.orderid_cancled_vol = {}           # vt_orderid in source: int
+        # self.orderid_nottraded_vol = {}         # vt_orderid in target: int
+        # self.only_cancle_orderids = set()
+
+        # Init_variables
         self.pre_subscribe_symbols = set()
         self.limited_prices = {}
         self.latest_prices = {}
@@ -177,7 +196,7 @@ class FollowEngine(BaseEngine):
         self.parameters = [
                            'source_gateway_name', 'target_gateway_name',
                            'filter_trade_timeout', 'cancel_order_timeout',
-                           'multiples',
+                           'multiples', 'follow_based', 'sync_base_price', 'is_keep_order_after_chase',
                            'tick_add', 'must_done_tick_add',
                            'inverse_follow',
                            'order_type', 'run_type',
@@ -292,6 +311,10 @@ class FollowEngine(BaseEngine):
                     setattr(self, name, FollowRunType(value))
                 elif name == "chase_base_price":
                     setattr(self, name, OrderBasePrice(value))
+                elif name == "follow_based":
+                    setattr(self, name, FollowBaseMode(value))
+                elif name == "sync_base_price":
+                    setattr(self, name, OrderBasePrice(value))
                 else:
                     setattr(self, name, value)
         self.write_log("参数配置读取成功。")
@@ -301,7 +324,7 @@ class FollowEngine(BaseEngine):
         Save follow setting to setting file.
         """
         for name in self.parameters:
-            if name in ['order_type', 'run_type', 'chase_base_price']:
+            if name in ['order_type', 'run_type', 'chase_base_price', 'follow_based', 'sync_base_price']:
                 self.follow_setting[name] = getattr(self, name).value   # noqa
             else:
                 self.follow_setting[name] = getattr(self, name)
@@ -516,17 +539,16 @@ class FollowEngine(BaseEngine):
         return d
 
     @staticmethod
-    def get_trade_time(trade: TradeData):
+    def get_trade_time(trade: Union[OrderData, TradeData]):
         """
-        Get trade time for compartility with old version
+        Get trade/order time for compartility with old version
         """
         try:
             trade_time = trade.time
         except AttributeError:
             trade_time = trade.datetime.strftime("%H:%M:%S")
-        
         return trade_time
-
+    
 
     @staticmethod
     def get_trade_type(trade: TradeData):
@@ -605,6 +627,28 @@ class FollowEngine(BaseEngine):
         self.init_limited_price(tick)
         self.update_latest_price(tick)
 
+
+    def is_duplicated_order(self, order: OrderData):
+        if order.vt_orderid in self.vt_accepted_orderids:
+            # 若已处理的订单状态改为部分成交或已成交，并且此单已经成功提交跟单到交易所，则订单允许撤单或追单
+            # 若订单状态已成交，需要在检查去重之前就做处理，否则会被去重功能挡住。
+            if order.status in [Status.PARTTRADED, Status.ALLTRADED] and order.vt_orderid in self.tradeid_orderids_dict:
+                if order.vt_orderid in self.orderid_keep_hang:
+                    self.orderid_keep_hang.remove(order.vt_orderid)
+                    print("已从保留委托队列中移除")
+
+                    # 开始重新计算撤单超时
+                    for vt_orderid in self.get_follow_orderids(order.vt_orderid):
+                        self.active_order_set.add(vt_orderid)
+                        self.active_order_counter[vt_orderid] = 0
+                        self.cancel_counter[vt_orderid] = 0
+
+            # self.write_log(f"委托单{order.vt_orderid}已处理、未成交撤单或重复推送。")
+            return True
+        else:
+            self.vt_accepted_orderids.add(order.vt_orderid)
+            return False
+
     def process_order_event(self, event: Event):
         """
         process order from target gateway.
@@ -613,8 +657,57 @@ class FollowEngine(BaseEngine):
             order = event.data
             vt_orderid = order.vt_orderid
             if order.gateway_name == self.source_gateway_name:
-                return
+                # print(order)
 
+                if self.follow_based == FollowBaseMode.BASE_TRADE:
+                    return
+
+                # order accepted by exchange
+                if order.status in [Status.NOTTRADED, Status.PARTTRADED, Status.ALLTRADED]:
+                    # Filter Duplicated push
+                    if self.is_duplicated_order(order):
+                        return
+
+                    # Turn on or off here to reduce too many push log
+                    if not self.is_active:
+                        self.write_log(f"委托单{order.vt_orderid}不跟随，系统尚未启动。")
+                        return
+
+                    # Function level filter
+                    if not self.filter_source_order(order):
+                        return
+
+                    self.write_log(f"委托单{order.vt_orderid}核验通过，执行跟随。")
+
+                    # Verify sucessfully begin to process.
+                    # 跟随委托模式暂不支持开平转换和日内交易开平计算，直接发单
+                    req = self.convert_order_to_order_req(order)
+                    self.send_order(req, order.vt_orderid, is_must_done=True)
+
+                # 若订单状态属于未成交，则订单暂时不允许被撤单。
+                if order.status == Status.NOTTRADED:
+                    print("已加入保留委托列表")
+                    self.orderid_keep_hang.add(order.vt_orderid)
+
+
+                if order.status == Status.CANCELLED:
+                    # 源户主动撤单，先把委托单从追单列表中移除
+                    orders = self.get_follow_orderids(order.vt_orderid)
+                    for orderid in orders:
+                        if orderid in self.chase_orderids:
+                            self.chase_orderids.remove(orderid)
+
+                    # Cancle relative orders in target gateway
+                    order_ids = self.get_follow_orderids(order.vt_orderid)
+                    for order_id in order_ids:
+                        self.cancel_order(order_id)
+
+                        if order_id in self.orderid_keep_hang:
+                            self.orderid_keep_hang.remove(order_id)
+
+            # 处理跟单户委托
+                        
+            # Update offset converter
             self.offset_converter.update_order(order)
 
             # Filter non-follow order
@@ -623,6 +716,13 @@ class FollowEngine(BaseEngine):
                 return
 
             if order.is_active():
+                # 委托模式下，若允许保留委托单，则不做撤单计时
+                if self.follow_based == FollowBaseMode.BASE_ORDER:
+                    signal_orderid = self.orderid_to_signal_orderid.get(order.vt_orderid)
+                    if signal_orderid and signal_orderid in self.orderid_keep_hang:
+                        print("属于保留委托，不执行撤单超时计算")
+                        return 
+
                 self.active_order_set.add(vt_orderid)
                 self.active_order_counter[vt_orderid] = 0
                 self.cancel_counter[vt_orderid] = 0
@@ -644,6 +744,9 @@ class FollowEngine(BaseEngine):
                             self.resend_order(order, self.chase_base_last_order_price)
                         else:
                             self.write_log(f"原始委托{ancestor_orderid}超过最大追单次数。")
+                            # send new order directly and will not cancle
+                            if self.is_keep_order_after_chase:
+                                self.direct_send_base_order(order)
         except:  # noqa
             msg = f"处理委托事件，触发异常：\n{traceback.format_exc()}"
             self.write_log(msg)
@@ -666,8 +769,13 @@ class FollowEngine(BaseEngine):
 
                 # Validate source trade
                 if not self.is_active:
-                    self.write_log(f"{trade.vt_tradeid}不跟随，系统尚未启动。")
+                    self.write_log(f"成交单{trade.vt_tradeid}不跟随，系统尚未启动。")
                     return
+
+                # Valid follow based mode
+                if self.follow_based == FollowBaseMode.BASE_ORDER:
+                    return
+
                 if not self.filter_source_trade(trade):
                     return
 
@@ -682,7 +790,7 @@ class FollowEngine(BaseEngine):
                     self.update_source_traded_net(trade.vt_symbol, self.get_trade_net_vol(trade))
                     self.save_follow_data()
 
-                self.write_log(f"{trade.vt_tradeid}成交单核验通过，执行跟随。")
+                self.write_log(f"成交单{trade.vt_tradeid}核验通过，执行跟随。")
 
                 # Process trades
                 for trade_dict in trades:
@@ -757,10 +865,14 @@ class FollowEngine(BaseEngine):
             if self.is_active:
                 self.pre_subscribe(position)
 
-            # Update source and target pos, refresh UI    
+            # Update source and target pos, refresh UI
+            # 当某个合约的仓位为0时，接口可能不会推送这个合约的数据，因此会导致测试环境下，仓位计算有可能不准确
+            # 但是只要有新的成交即可恢复正常。
             if position.gateway_name == self.source_gateway_name:
+                # print("source position:", position)
                 self.update_source_pos_by_pos(position)
             else:
+                # print("target position:", position)
                 self.offset_converter.update_position(position)
                 self.update_target_pos_by_pos(position)
         except:  # noqa
@@ -896,6 +1008,22 @@ class FollowEngine(BaseEngine):
         self.chase_resend_count_dict[ancestor_orderid] += 1
 
         self.intraday_orderids.add(vt_orderid)
+
+    def direct_send_base_order(self, order: OrderData, price: float = None):
+        if not price:
+            price = order.price
+        new_vol = order.volume - order.traded
+
+        req = OrderRequest(
+            symbol=order.symbol,
+            exchange=order.exchange,
+            direction=order.direction,
+            type=OrderType.LIMIT,
+            volume=new_vol,
+            price=price,
+            offset=order.offset
+        )
+        return self.main_engine.send_order(req, self.target_gateway_name)
 
     def refresh_pos(self):
         """
@@ -1098,7 +1226,7 @@ class FollowEngine(BaseEngine):
         self.latest_prices[vt_symbol]['bid_price'] = tick.bid_price_1
         self.latest_prices[vt_symbol]['ask_price'] = tick.ask_price_1
 
-    def is_timeout_trade(self, trade: TradeData):
+    def is_timeout_trade(self, trade: Union[TradeData, OrderData]):
         """
         If trade happened a specified period of time before now, it usually happened if take a long time to reconnect.
         Because trade is not in self.vt_tradeids(if app don't restart). so it can't be filtered by self.vt_tradeids
@@ -1106,36 +1234,71 @@ class FollowEngine(BaseEngine):
         now = self.get_current_time()
         trade_time = datetime.strptime(self.get_trade_time(trade), '%H:%M:%S')
         trade_time = trade_time.replace(year=now.year, month=now.month, day=now.day)
+
+        prefix_str = "成交单" if isinstance(trade, TradeData) else "委托单"
         if now - trade_time > timedelta(seconds=self.filter_trade_timeout):
-            self.write_log(f"{trade.vt_tradeid} 成交时间：{self.get_trade_time(trade)} 超过跟单有效期。")
+            self.write_log(f"{prefix_str}{trade.vt_tradeid} 时间：{self.get_trade_time(trade)} 超过跟单有效期。")
             return True
         else:
             return False
+
+    # def is_timeout_order(self, order: OrderData):
+    #     """
+    #     Can not Compatibility with old version Orderdata without datetime attribute
+    #     """
+    #     now = self.get_current_time()
+    #     if now - order.datetime > timedelta(seconds=self.filter_trade_timeout):
+    #         self.write_log(f"委托单{order.vt_orderid} 委托时间：{order.datetime} 超过跟单有效期。")
+    #         return True
+    #     else:
+    #         return False
+
 
     def is_followed_trade(self, trade: TradeData):
         """"""
         if trade.vt_tradeid in self.tradeid_orderids_dict:
-            self.write_log(f"{trade.vt_tradeid} 已跟随，无需重复跟随。")
+            self.write_log(f"成交单{trade.vt_tradeid} 已跟随，无需重复跟随。")
             return True
         else:
             return False
 
-    def is_skip_contract_trade(self, trade: TradeData):
-        """"""
+    def is_followed_order(self, order: OrderData):
+        if order.vt_orderid in self.tradeid_orderids_dict:
+            self.write_log(f"委托单{order.vt_orderid} 已跟随，无需重复跟随。")
+            return True
+        else:
+            return False
+            
+
+    def is_skip_contract_trade(self, trade: Union[TradeData, OrderData]):
+        """
+        Check order or trade contract
+        """
+        if isinstance(trade, TradeData):
+            id_string = trade.vt_tradeid
+        else:
+            id_string = trade.vt_orderid
+
         if trade.vt_symbol in self.skip_contracts:
-            self.write_log(f"{trade.vt_tradeid} 合约{trade.vt_symbol}禁止同步。")
+            self.write_log(f"{id_string} 合约{trade.vt_symbol}禁止同步。")
             return True
         else:
             return False
 
-    def is_to_follow_volume(self, trade: TradeData):
-        """"""
+    def is_to_follow_volume(self, trade: Union[TradeData, OrderData]):
+        """
+        Check order or trade volume
+        """
         if self.is_filter_order_vol:
-            order = self.main_engine.get_order(trade.vt_orderid)
+            if isinstance(trade, TradeData):
+                order = self.main_engine.get_order(trade.vt_orderid)
+            else:
+                order = trade
+
             if order.volume in self.order_volumes_to_follow:
                 return True
             else:
-                self.write_log(f"{order.vt_orderid}手数{order.volume}不符合跟单规则。")
+                self.write_log(f"委托单{order.vt_orderid}手数{order.volume}不符合跟单规则。")
                 return False
         else:
             return True
@@ -1161,6 +1324,28 @@ class FollowEngine(BaseEngine):
             return
 
         return trade
+
+    def filter_source_order(self, order: OrderData):
+        """
+        Filter order from source gateway.
+        """
+        # Filter not follow order volume
+        if not self.is_to_follow_volume(order):
+            return
+
+        # Filter skip contract
+        if self.is_skip_contract_trade(order):
+            return
+
+        # Filter followed trade push when restart app
+        if self.is_followed_order(order):
+            return
+
+        # Filter timeout trade
+        if self.is_timeout_trade(order):
+            return
+
+        return order
 
     def filter_target_not_follow(self, vt_orderid: str):
         """"""
@@ -1253,6 +1438,25 @@ class FollowEngine(BaseEngine):
                 price = max(limit_price['limit_down'], price - tick_add * contract.pricetick)
 
         return price
+
+    def convert_order_to_order_req(self, order: OrderData):
+        """
+        Order converter to order request. Only support convert directly, do not support intraday mode.
+        """
+        req = OrderRequest(
+            symbol=order.symbol,
+            exchange=order.exchange,
+            direction=order.direction,
+            type=OrderType.LIMIT,
+            volume=order.volume,
+            price=order.price,
+            offset=order.offset
+        )
+        req.volume = req.volume * self.multiples
+        if self.inverse_follow:
+            req = self.inverse_req(req)
+        return req
+
 
     def convert_trade_to_order_req(self, trade: TradeData, is_must_done: bool = False):
         """
@@ -1368,11 +1572,20 @@ class FollowEngine(BaseEngine):
         """
         Send and record result.
         """
-        req.price = self.convert_order_price(req.vt_symbol, req.direction, req.price, is_must_done)
+        if vt_tradeid.startswith("SYNC"):
+            price_base = self.sync_base_price
+            is_must_done = True
+        else:
+            price_base = OrderBasePrice.GOOD_FOR_SELF
+
+        req.price = self.convert_order_price(req.vt_symbol, req.direction, req.price, is_must_done, base_price=price_base)
         vt_orderids = self.convert_and_send_orders(req, is_must_done)
         if vt_orderids:
             orderids_list = self.get_follow_orderids(vt_tradeid)
             orderids_list.extend(vt_orderids)
+
+            for orderid in copy(orderids_list):
+                self.orderid_to_signal_orderid[orderid] = vt_tradeid
             
             if vt_tradeid.startswith('SYNC'):
                 order_prefix = "同步单"
@@ -1414,6 +1627,8 @@ class FollowEngine(BaseEngine):
                     self.open_orderids.add(vt_orderid)
 
                 if is_must_done and self.is_chase_order:
+                    # 如果是委托模式，跟随源户主动撤单的，则不应该追单，收到信号就移除出chase_orderids
+
                     self.chase_orderids.add(vt_orderid)
                     self.chase_ancestor_dict[vt_orderid] = vt_orderid
                     self.chase_resend_count_dict[vt_orderid] = 0

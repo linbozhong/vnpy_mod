@@ -22,7 +22,8 @@ from ..engine import (
     EVENT_FOLLOW_LOG,
     EVENT_FOLLOW_POS_DELTA,
     EVENT_FOLLOW_MODIFY_POS,
-    OrderBasePrice
+    OrderBasePrice,
+    FollowBaseMode
 )
 
 
@@ -128,6 +129,12 @@ class FollowManager(QtWidgets.QWidget):
         self.intraday_trading_combo.activated[str].connect(self.set_is_intraday_trading)
         self.get_current_intraday_trading()
 
+
+        self.follow_based_combo = QtWidgets.QComboBox()
+        self.follow_based_combo.addItems(['跟随委托', '跟随成交'])
+        self.follow_based_combo.activated[str].connect(self.set_follow_based)
+        self.get_current_follow_based()
+
         validator = QtGui.QIntValidator()
 
         self.follow_timeout_line = QtWidgets.QLineEdit(str(self.follow_engine.filter_trade_timeout))
@@ -149,6 +156,7 @@ class FollowManager(QtWidgets.QWidget):
         form.addRow("超时禁跟（秒）", self.follow_timeout_line)
         form.addRow("跟随倍数", self.multiples_line)
         form.addRow("是否日内交易", self.intraday_trading_combo)
+        form.addRow("信号来源", self.follow_based_combo)
         form.addRow(self.start_button)
         form.addRow(self.stop_button)
 
@@ -201,6 +209,14 @@ class FollowManager(QtWidgets.QWidget):
             self.follow_engine.set_parameters('inverse_follow', True)
         self.write_log(f"是否反向跟单：{self.follow_engine.inverse_follow} 设置成功")
 
+    def set_follow_based(self, follow_based: str):
+        if follow_based == "跟随委托":
+            self.follow_engine.set_parameters('follow_based', FollowBaseMode.BASE_ORDER)
+        else:
+            self.follow_engine.set_parameters('follow_based', FollowBaseMode.BASE_TRADE)
+        self.write_log(f"跟单信号模式：{self.follow_engine.follow_based.value} 设置成功")
+
+
     def set_is_intraday_trading(self, intraday_flag: str):
         """"""
         if intraday_flag == "是":
@@ -224,6 +240,13 @@ class FollowManager(QtWidgets.QWidget):
             self.intraday_trading_combo.setCurrentIndex(0)
         else:
             self.intraday_trading_combo.setCurrentIndex(1)
+
+    def get_current_follow_based(self):
+        follow_based = self.follow_engine.follow_based
+        if follow_based == FollowBaseMode.BASE_ORDER:
+            self.follow_based_combo.setCurrentIndex(0)
+        else:
+            self.follow_based_combo.setCurrentIndex(1)
 
     def set_follow_timeout(self):
         text = self.follow_timeout_line.text()
@@ -474,6 +497,9 @@ class SyncPosEditor(QtWidgets.QDialog):
         """"""
         self.sync_symbol_combo.clear()
         symbol_list = list(self.follow_engine.get_positions().keys())
+        for contract in self.follow_engine.skip_contracts:
+            if contract in symbol_list:
+                symbol_list.remove(contract)
         self.sync_symbol_combo.addItems(symbol_list)
 
     def set_sync_symbol(self, vt_symbol: str):
@@ -642,6 +668,11 @@ class OrderSettingEditor(QtWidgets.QDialog):
         self.chase_base_price_combo.activated[str].connect(self.set_chase_base_price)
         self.get_current_chase_base_price()
 
+        self.sync_base_price_combo = QtWidgets.QComboBox()
+        self.sync_base_price_combo.addItems(['对手价', '挂单价'])
+        self.sync_base_price_combo.activated[str].connect(self.set_sync_base_price)
+        self.get_current_sync_base_price()
+
         self.chase_combo = QtWidgets.QComboBox()
         self.chase_combo.addItems(['是', '否'])
         self.chase_combo.activated[str].connect(self.set_is_chase)
@@ -649,6 +680,10 @@ class OrderSettingEditor(QtWidgets.QDialog):
         self.chase_base_last_order_combo = QtWidgets.QComboBox()
         self.chase_base_last_order_combo.addItems(['是', '否'])
         self.chase_base_last_order_combo.activated[str].connect(self.set_chase_base_last)
+
+        self.keep_order_after_chase_combo = QtWidgets.QComboBox()
+        self.keep_order_after_chase_combo.addItems(['是', '否'])
+        self.keep_order_after_chase_combo.activated[str].connect(self.set_keep_order_after_chase)
 
         validator = QtGui.QIntValidator()
         self.chase_timeout_line = QtWidgets.QLineEdit(str(self.follow_engine.chase_order_timeout))
@@ -684,6 +719,8 @@ class OrderSettingEditor(QtWidgets.QDialog):
         self.chase_base_last_order_combo.currentIndexChanged[int].connect(self.change_base_price_editable)
         self.get_current_chase_base_last()
 
+        self.get_current_keep_order_after_chase()
+
         self.save_setting_button = QtWidgets.QPushButton("保存设置")
         self.save_setting_button.clicked.connect(self.save_setting)
         self.save_setting_button.setFixedHeight(self.save_setting_button.sizeHint().height() * 1.5)
@@ -700,6 +737,8 @@ class OrderSettingEditor(QtWidgets.QDialog):
         form.addRow("追单超时", self.chase_timeout_line)
         form.addRow("追单超价", self.chase_tickadd_line)
         form.addRow("最大追单次数", self.chase_resend_line)
+        form.addRow("追单失败后保留委托", self.keep_order_after_chase_combo)
+        form.addRow("手动同步基础价", self.sync_base_price_combo)
         form.addRow(self.save_setting_button)
 
         vbox = QtWidgets.QVBoxLayout()
@@ -716,6 +755,10 @@ class OrderSettingEditor(QtWidgets.QDialog):
         base_price = self.follow_engine.chase_base_price
         self.chase_base_price_combo.setCurrentText(base_price.value)
 
+    def get_current_sync_base_price(self):
+        base_price = self.follow_engine.sync_base_price
+        self.sync_base_price_combo.setCurrentText(base_price.value)
+
     def get_current_chase(self):
         """"""
         is_chase_order = self.follow_engine.is_chase_order
@@ -729,10 +772,16 @@ class OrderSettingEditor(QtWidgets.QDialog):
         if is_chase_base_last:
             self.chase_base_last_order_combo.setCurrentIndex(0)
             self.chase_base_price_combo.setEnabled(False)
-
         else:
             self.chase_base_last_order_combo.setCurrentIndex(1)
             self.chase_base_price_combo.setEnabled(True)
+
+    def get_current_keep_order_after_chase(self):
+        is_keep_order = self.follow_engine.is_keep_order_after_chase
+        if is_keep_order:
+            self.keep_order_after_chase_combo.setCurrentIndex(0)
+        else:
+            self.keep_order_after_chase_combo.setCurrentIndex(1)
 
     def change_base_price_editable(self, editable: int):
         if not editable:
@@ -768,6 +817,14 @@ class OrderSettingEditor(QtWidgets.QDialog):
             self.follow_engine.set_parameters('chase_base_price', OrderBasePrice.GOOD_FOR_OTHER)
         self.write_log(f"追单基础价（不指定）：{self.follow_engine.chase_base_price.value} 设置成功")
 
+    def set_sync_base_price(self, sync_base_price: str):
+        if sync_base_price == "挂单价":
+            self.follow_engine.set_parameters('sync_base_price', OrderBasePrice.GOOD_FOR_SELF)
+        else:
+            self.follow_engine.set_parameters('sync_base_price', OrderBasePrice.GOOD_FOR_OTHER)
+        self.write_log(f"手动同步基础价：{self.follow_engine.sync_base_price.value} 设置成功")
+
+
     def set_is_chase(self, chase_flag: str):
         """"""
         if chase_flag == "是":
@@ -792,6 +849,13 @@ class OrderSettingEditor(QtWidgets.QDialog):
             self.follow_engine.set_parameters('chase_base_last_order_price', False)
             self.chase_base_price_combo.setEnabled(True)
         self.write_log(f"追价是否基于上笔委托价格：{self.follow_engine.chase_base_last_order_price}")
+
+    def set_keep_order_after_chase(self, keep_order_flag: str):
+        if keep_order_flag == "是":
+            self.follow_engine.set_parameters('is_keep_order_after_chase', True)
+        else:
+            self.follow_engine.set_parameters('is_keep_order_after_chase', False)
+        self.write_log(f"追单失败后是否保留委托：{self.follow_engine.is_keep_order_after_chase}")
 
     def set_chase_order_timeout(self):
         """"""
