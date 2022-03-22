@@ -756,6 +756,7 @@ class FollowEngine(BaseEngine):
                                 # send new order directly and will not cancle
                                 if self.is_keep_order_after_chase:
                                     self.direct_send_base_order(order)
+                                    self.write_log(f"原始委托{ancestor_orderid}追单失败后直接发送新委托以做保留。")
         except:  # noqa
             msg = f"处理委托事件，触发异常：\n{traceback.format_exc()}"
             self.write_log(msg)
