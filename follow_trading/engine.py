@@ -1804,7 +1804,8 @@ class FollowEngine(BaseEngine):
     def sync_all_pos(self):
         """Sync pos of all non-empty contract"""
         for vt_symbol in list(self.positions.keys()):
-            self.sync_pos(vt_symbol)
+            if vt_symbol not in self.skip_contracts:
+                self.sync_pos(vt_symbol)
 
     def send_sync_order_req(
         self,
