@@ -1376,7 +1376,7 @@ class FollowEngine(BaseEngine):
                 if vt_orderid == orderid:
                     return True
 
-        for vt_orderid in self.fail_chase_orderid:
+        if vt_orderid in self.fail_chase_orderid:
             return True
 
     def validate_target_pos(self, req: OrderRequest):
