@@ -222,6 +222,8 @@ class FollowEngine(BaseEngine):
         self.load_data()
         self.view_vars()
 
+        print("版本最后修改时间: 20220908 14:47")
+
     def init_engine(self):
         """
         Init engine.
@@ -633,21 +635,25 @@ class FollowEngine(BaseEngine):
 
     def is_duplicated_order(self, order: OrderData):
         if order.vt_orderid in self.vt_accepted_orderids:
-            # 若已处理的订单状态改为部分成交或已成交，并且此单已经成功提交跟单到交易所，则订单允许撤单或追单
-            # 若订单状态已成交，需要在检查去重之前就做处理，否则会被去重功能挡住。
-            if order.status in [Status.PARTTRADED, Status.ALLTRADED] and order.vt_orderid in self.tradeid_orderids_dict:
+            # 若源户已处理的委托全部成交，并且此单已经成功提交跟单到交易所，才允许追单计时
+            # 因为本次回报ID之前已登记过了，所以委托成交后，需要在检查去重之前就开始做追单计时，否则会被去重功能过滤掉
+            if order.status in [Status.ALLTRADED] and order.vt_orderid in self.tradeid_orderids_dict:
+                # 如果一开始就全部成交的（推送2个委托回报），因为不在保留委托名单里面，所以第二个推送的委托在这里不会触发以下代码
                 if order.vt_orderid in self.orderid_keep_hang:
                     self.orderid_keep_hang.remove(order.vt_orderid)
-                    print("已从保留委托队列中移除")
+                    self.write_log(f"委托单{order.vt_orderid}全部成交，从保留委托队列中移除，开始追单计时……")
 
-                    # 开始重新计算撤单超时
-                    # 委托模式下，超价会导致信号户未成交而跟单户成交的状况，要先判断是否成交
+                    # 开始追单
                     for vt_orderid in self.get_follow_orderids(order.vt_orderid):
+                        # 委托模式下，超价会导致信号户未成交而跟单户成交的状况，要先判断是否成交
                         order_ = self.main_engine.get_order(vt_orderid)
-                        if not order_.is_active():
-                            print(f"{vt_orderid}已经不是活动委托")
-                            continue
+                        # order_偶尔会变成空值导致报错
+                        if order_ is not None:
+                            if not order_.is_active():
+                                print(f"{vt_orderid}已经不是活动委托")
+                                continue
 
+                        # 开始计时
                         self.active_order_set.add(vt_orderid)
                         self.active_order_counter[vt_orderid] = 0
                         self.cancel_counter[vt_orderid] = 0
@@ -673,7 +679,9 @@ class FollowEngine(BaseEngine):
                     return
 
                 # order accepted by exchange
+                # 一般三种情况：挂单、直接部分成交，直接全部成交
                 if order.status in [Status.NOTTRADED, Status.PARTTRADED, Status.ALLTRADED]:
+                    # 委托回报会有多笔，必须对重复回报过滤，否则会触发多次跟单，但是此处对已撤销状态的回报不做重复过滤
                     # Filter Duplicated push
                     if self.is_duplicated_order(order):
                         return
@@ -694,11 +702,14 @@ class FollowEngine(BaseEngine):
                     req = self.convert_order_to_order_req(order)
                     self.send_order(req, order.vt_orderid, is_must_done=True)
 
-                # 若订单状态属于未成交，则订单暂时不允许被撤单。
-                if order.status == Status.NOTTRADED:
-                    print("已加入保留委托列表")
+                # 跟单系统追单是通过计算活动委托的时间来实现的，所以只要是活动委托，跟单系统就会开始计时，所以如果要挂单，就必须做额外的标记
+                # 若源户委托未成交（挂单）或部分成交，则该委托加入保留队列，跟单户通过这个名单来判断是否会被撤单
+                # 若源户直接全部成交，则不加入保留名单，处理跟单户的委托时就会做追单计时
+                if order.status in [Status.NOTTRADED, Status.PARTTRADED]:
+                    print(f"{order.vt_orderid}已加入保留委托列表")
                     self.orderid_keep_hang.add(order.vt_orderid)
 
+                # 源户主动撤单
                 if order.status == Status.CANCELLED:
                     # 源户主动撤单，先把委托单从追单列表中移除
                     # orders = self.get_follow_orderids(order.vt_orderid)
@@ -709,10 +720,12 @@ class FollowEngine(BaseEngine):
                     # Cancle relative orders in target gateway
                     order_ids = self.get_follow_orderids(order.vt_orderid)
                     for order_id in order_ids:
-                        self.cancel_order(order_id)
+                        # 显式指出撤单后不允许追单
+                        self.cancel_order(order_id, is_allow_resend=False)
 
-                        if order_id in self.orderid_keep_hang:
-                            self.orderid_keep_hang.remove(order_id)
+                        # 只有源户成交（跟单户可能需要追单）才需要撤掉保留委托，源户撤单表示不做此笔交易了，自然不需要追单了
+                        # if order_id in self.orderid_keep_hang:
+                        #     self.orderid_keep_hang.remove(order_id)
 
             # 处理跟单户委托
             if order.gateway_name == self.target_gateway_name:
@@ -731,13 +744,14 @@ class FollowEngine(BaseEngine):
                     return
 
                 if order.is_active():
-                    # 委托模式下，若允许保留委托单，则不做撤单计时
+                    # 委托模式下，若允许保留委托单，则不做追单计时
                     if self.follow_based == FollowBaseMode.BASE_ORDER:
                         signal_orderid = self.orderid_to_signal_orderid.get(order.vt_orderid)
                         if signal_orderid and signal_orderid in self.orderid_keep_hang:
                             print("属于保留委托，不执行撤单超时计算")
                             return 
 
+                    # 非保留委托单（源户成交），开始做追单计时
                     self.active_order_set.add(vt_orderid)
                     self.active_order_counter[vt_orderid] = 0
                     self.cancel_counter[vt_orderid] = 0
@@ -747,6 +761,7 @@ class FollowEngine(BaseEngine):
                         self.active_order_set.remove(vt_orderid)
                         # print(f'remove {vt_orderid} from calculate time')
 
+                    # 追单逻辑
                     if order.status == Status.CANCELLED:
                         # Add unsucessfully follow order to Lost
                         if vt_orderid in self.open_orderids:
@@ -786,13 +801,14 @@ class FollowEngine(BaseEngine):
                 # Update source position anyhow and refresh UI
                 self.update_source_pos_by_trade(trade)
 
+                # Valid follow based mode
+                # 此过滤放前面，不然在委托模式未启动前会收到“系统未启动成交不跟随”的提示，容易引起错误理解
+                if self.follow_based == FollowBaseMode.BASE_ORDER:
+                    return
+
                 # Validate source trade
                 if not self.is_active:
                     self.write_log(f"成交单{trade.vt_tradeid}不跟随，系统尚未启动。")
-                    return
-
-                # Valid follow based mode
-                if self.follow_based == FollowBaseMode.BASE_ORDER:
                     return
 
                 if not self.filter_source_trade(trade):
