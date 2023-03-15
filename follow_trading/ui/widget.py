@@ -28,15 +28,35 @@ from ..engine import (
 
 
 class ComboBox(QtWidgets.QComboBox):
-    pop_show = QtCore.pyqtSignal()
+    # pyqtSignal改为Signal
+    pop_show = QtCore.Signal()
+    # last_current_text = ''
 
+    # 重写点击combo
     def showPopup(self):
+        # 这个事件要触发的函数直接写在基类不灵活，用信号触发的方式，可以灵活绑定函数
         self.pop_show.emit()
         super(ComboBox, self).showPopup()
 
+    # 传入一个列表，同步更新items
+    def update_items_from_target(self, target_list):
+        to_clear_idx = []
+        # 删除
+        for idx in range(self.count()):
+            txt = self.itemText(idx)
+            if txt not in target_list:
+                to_clear_idx.append(idx)
+        for idx in to_clear_idx:
+            self.removeItem(idx)
+        # 添加
+        for symbol in target_list:
+            idx = self.findText(symbol)
+            if idx == -1:
+                self.addItem(symbol)
+
 
 class FollowManager(QtWidgets.QWidget):
-    signal_log = QtCore.pyqtSignal(Event)
+    signal_log = QtCore.Signal(Event)
     # timer = QtCore.QTimer()
 
     def __init__(self, main_engine: MainEngine, event_engine: EventEngine):
@@ -61,7 +81,7 @@ class FollowManager(QtWidgets.QWidget):
         self.setMinimumSize(920, 750)
         self.setMaximumSize(1920, 1080)
 
-        # create widgets
+        # 创建widgets
         self.start_button = QtWidgets.QPushButton("启动")
         self.start_button.clicked.connect(self.start_follow)
 
@@ -120,19 +140,21 @@ class FollowManager(QtWidgets.QWidget):
 
         self.follow_direction_combo = QtWidgets.QComboBox()
         self.follow_direction_combo.addItems(['正向跟随', '反向跟随'])
-        self.follow_direction_combo.activated[str].connect(self.set_follow_direction)
+
+        # pyside6取消了activated[其它类型]的,可以使用新函数textActivated，如果要向后兼容，可以用currentTextChanged
+        # self.follow_direction_combo.activated[int].connect(self.set_follow_direction)
+        self.follow_direction_combo.currentTextChanged[str].connect(self.set_follow_direction)
         self.get_current_follow_direction()
         self.follow_direction_combo.setEnabled(False)
 
         self.intraday_trading_combo = QtWidgets.QComboBox()
         self.intraday_trading_combo.addItems(['是', '否'])
-        self.intraday_trading_combo.activated[str].connect(self.set_is_intraday_trading)
+        self.intraday_trading_combo.currentTextChanged[str].connect(self.set_is_intraday_trading)
         self.get_current_intraday_trading()
-
 
         self.follow_based_combo = QtWidgets.QComboBox()
         self.follow_based_combo.addItems(['跟随委托', '跟随成交'])
-        self.follow_based_combo.activated[str].connect(self.set_follow_based)
+        self.follow_based_combo.currentTextChanged[str].connect(self.set_follow_based)
         self.get_current_follow_based()
 
         validator = QtGui.QIntValidator()
@@ -148,7 +170,7 @@ class FollowManager(QtWidgets.QWidget):
         self.pos_delta_monitor = PosDeltaMonitor(self.main_engine, self.event_engine)
         self.log_monitor = LogMonitor(self.main_engine, self.event_engine)
 
-        # Set layout
+        # 设置layout
         form = QtWidgets.QFormLayout()
         form.addRow("标准户接口", self.source_combo)
         form.addRow("跟单户接口", self.target_combo)
@@ -187,6 +209,7 @@ class FollowManager(QtWidgets.QWidget):
 
     def register_event(self):
         """"""
+        # 功能测试
         # self.timer.start(3000)
         # self.timer.timeout.connect(self.refresh_symbol_list)
         # self.timer.timeout.connect(self.test_timer2)
@@ -215,7 +238,6 @@ class FollowManager(QtWidgets.QWidget):
         else:
             self.follow_engine.set_parameters('follow_based', FollowBaseMode.BASE_TRADE)
         self.write_log(f"跟单信号模式：{self.follow_engine.follow_based.value} 设置成功")
-
 
     def set_is_intraday_trading(self, intraday_flag: str):
         """"""
@@ -266,27 +288,23 @@ class FollowManager(QtWidgets.QWidget):
             self.write_log(f"获取不到可用接口名称，请先连接接口")
         else:
             for combo in [self.source_combo, self.target_combo]:
-                combo.clear()
-                combo.addItems(gateways)
+                combo.update_items_from_target(gateways)
             self.write_log(f"接口名称获取成功")
 
     def refresh_skip_contracts(self):
         """"""
-        self.skip_contracts_combo.clear()
         symbol_list = self.follow_engine.get_skip_contracts()
-        self.skip_contracts_combo.addItems(symbol_list)
+        self.skip_contracts_combo.update_items_from_target(symbol_list)
 
     def refresh_intraday(self):
         """"""
-        self.intraday_combo.clear()
         symbol_list = self.follow_engine.get_intraday_symbols()
-        self.intraday_combo.addItems(symbol_list)
+        self.intraday_combo.update_items_from_target(symbol_list)
 
     def refresh_order_vols(self):
-        self.order_vol_combo.clear()
         vol_list = self.follow_engine.get_order_vols_to_follow()
         vol_str_list = [str(vol) for vol in vol_list]
-        self.order_vol_combo.addItems(vol_str_list)
+        self.order_vol_combo.update_items_from_target(vol_str_list)
 
     def test_timer(self):
         """"""
@@ -319,7 +337,6 @@ class FollowManager(QtWidgets.QWidget):
 
             self.sync_pos_button.setEnabled(True)
             self.close_hedged_pos_button.setEnabled(True)
-            # self.modify_pos_button.setEnabled(False)
             self.set_skip_button.setEnabled(True)
 
             self.source_combo.setEnabled(False)
@@ -334,7 +351,6 @@ class FollowManager(QtWidgets.QWidget):
             self.stop_button.setEnabled(False)
             self.sync_pos_button.setEnabled(False)
             self.close_hedged_pos_button.setEnabled(False)
-            # self.modify_pos_button.setEnabled(True)
 
     def validate_vt_symbol(self, vt_symbol: str):
         """"""
@@ -409,6 +425,7 @@ class PosDeltaMonitor(BaseMonitor):
         super(PosDeltaMonitor, self).init_ui()
         self.resize_columns()
 
+
 class LogMonitor(BaseMonitor):
     """
     Monitor for log data.
@@ -446,12 +463,12 @@ class SyncPosEditor(QtWidgets.QDialog):
         self.setWindowTitle("同步仓位")
         self.setMinimumWidth(300)
 
-        # Select symbol widget
+        # 选择合约widget
         self.sync_symbol_combo = ComboBox()
         self.sync_symbol_combo.pop_show.connect(self.refresh_symbol_list)
-        self.sync_symbol_combo.activated[str].connect(self.set_sync_symbol)
+        self.sync_symbol_combo.currentTextChanged[str].connect(self.set_sync_symbol)
 
-        # Sync action button
+        # 同步持仓button
         self.sync_open_button = QtWidgets.QPushButton("单合约开仓同步")
         self.sync_open_button.clicked.connect(self.sync_open)
 
@@ -478,7 +495,7 @@ class SyncPosEditor(QtWidgets.QDialog):
                     self.sync_basic_button]:
             btn.setFixedHeight(btn.sizeHint().height() * 1.5)
 
-        # Set layout
+        # 设置layout
         form_sync = QtWidgets.QFormLayout()
         form_sync.addRow("同步合约", self.sync_symbol_combo)
         form_sync.addRow(self.sync_open_button)
@@ -495,12 +512,11 @@ class SyncPosEditor(QtWidgets.QDialog):
 
     def refresh_symbol_list(self):
         """"""
-        self.sync_symbol_combo.clear()
         symbol_list = list(self.follow_engine.get_positions().keys())
         for contract in self.follow_engine.skip_contracts:
             if contract in symbol_list:
                 symbol_list.remove(contract)
-        self.sync_symbol_combo.addItems(symbol_list)
+        self.sync_symbol_combo.update_items_from_target(symbol_list)
 
     def set_sync_symbol(self, vt_symbol: str):
         """"""
@@ -560,14 +576,9 @@ class PosEditor(QtWidgets.QDialog):
 
         self.symbol_combo = ComboBox()
         self.symbol_combo.pop_show.connect(self.refresh_symbol_list)
-        self.symbol_combo.activated[str].connect(self.set_modify_symbol)
+        self.symbol_combo.currentTextChanged[str].connect(self.set_modify_symbol)
 
         validator = QtGui.QIntValidator()
-
-        # self.long_pos_line = QtWidgets.QLineEdit()
-        # self.long_pos_line.setValidator(validator)
-        # self.short_pos_line = QtWidgets.QLineEdit()
-        # self.short_pos_line.setValidator(validator)
 
         self.basic_delta_line = QtWidgets.QLineEdit()
         self.basic_delta_line.setValidator(validator)
@@ -586,8 +597,6 @@ class PosEditor(QtWidgets.QDialog):
 
         form = QtWidgets.QFormLayout()
         form.addRow("合约代码", self.symbol_combo)
-        # form.addRow("目标户多仓", self.long_pos_line)
-        # form.addRow("目标户空仓", self.short_pos_line)
         form.addRow("底仓差", self.basic_delta_line)
         form.addRow("交易净仓", self.traded_net_line)
         form.addRow("丢失净仓", self.lost_follow_line)
@@ -606,14 +615,10 @@ class PosEditor(QtWidgets.QDialog):
         Set symbol to be modified
         """
         self.modify_symbol = vt_symbol
-        # target_long = self.follow_engine.get_pos(vt_symbol, 'target_long')
-        # target_short = self.follow_engine.get_pos(vt_symbol, 'target_short')
         basic_delta = self.follow_engine.get_pos(vt_symbol, 'basic_delta')
         traded_net = self.follow_engine.get_pos(vt_symbol, 'source_traded_net')
         lost_follow = self.follow_engine.get_pos(vt_symbol, 'lost_follow_net')
 
-        # self.long_pos_line.setText(str(target_long))
-        # self.short_pos_line.setText(str(target_short))
         self.basic_delta_line.setText(str(basic_delta))
         self.traded_net_line.setText(str(traded_net))
         self.lost_follow_line.setText(str(lost_follow))
@@ -621,14 +626,11 @@ class PosEditor(QtWidgets.QDialog):
 
     def refresh_symbol_list(self):
         """"""
-        self.symbol_combo.clear()
         symbol_list = list(self.follow_engine.get_positions().keys())
-        self.symbol_combo.addItems(symbol_list)
+        self.symbol_combo.update_items_from_target(symbol_list)
 
     def modify(self):
         """"""
-        # new_long = self.long_pos_line.text()
-        # new_short = self.short_pos_line.text()
         new_basic_delta = self.basic_delta_line.text()
         new_traded_net = self.traded_net_line.text()
         new_lost_follow = self.lost_follow_line.text()
@@ -660,30 +662,30 @@ class OrderSettingEditor(QtWidgets.QDialog):
 
         self.order_type_combo = QtWidgets.QComboBox()
         self.order_type_combo.addItems(['限价', '市价'])
-        self.order_type_combo.activated[str].connect(self.set_order_type)
+        self.order_type_combo.currentTextChanged[str].connect(self.set_order_type)
         self.get_current_order_type()
 
         self.chase_base_price_combo = QtWidgets.QComboBox()
         self.chase_base_price_combo.addItems(['对手价', '挂单价'])
-        self.chase_base_price_combo.activated[str].connect(self.set_chase_base_price)
+        self.chase_base_price_combo.currentTextChanged[str].connect(self.set_chase_base_price)
         self.get_current_chase_base_price()
 
         self.sync_base_price_combo = QtWidgets.QComboBox()
         self.sync_base_price_combo.addItems(['对手价', '挂单价'])
-        self.sync_base_price_combo.activated[str].connect(self.set_sync_base_price)
+        self.sync_base_price_combo.currentTextChanged[str].connect(self.set_sync_base_price)
         self.get_current_sync_base_price()
 
         self.chase_combo = QtWidgets.QComboBox()
         self.chase_combo.addItems(['是', '否'])
-        self.chase_combo.activated[str].connect(self.set_is_chase)
+        self.chase_combo.currentTextChanged[str].connect(self.set_is_chase)
 
         self.chase_base_last_order_combo = QtWidgets.QComboBox()
         self.chase_base_last_order_combo.addItems(['是', '否'])
-        self.chase_base_last_order_combo.activated[str].connect(self.set_chase_base_last)
+        self.chase_base_last_order_combo.currentTextChanged[str].connect(self.set_chase_base_last)
 
         self.keep_order_after_chase_combo = QtWidgets.QComboBox()
         self.keep_order_after_chase_combo.addItems(['是', '否'])
-        self.keep_order_after_chase_combo.activated[str].connect(self.set_keep_order_after_chase)
+        self.keep_order_after_chase_combo.currentTextChanged[str].connect(self.set_keep_order_after_chase)
 
         validator = QtGui.QIntValidator()
         self.chase_timeout_line = QtWidgets.QLineEdit(str(self.follow_engine.chase_order_timeout))
@@ -824,7 +826,6 @@ class OrderSettingEditor(QtWidgets.QDialog):
             self.follow_engine.set_parameters('sync_base_price', OrderBasePrice.GOOD_FOR_OTHER)
         self.write_log(f"手动同步基础价：{self.follow_engine.sync_base_price.value} 设置成功")
 
-
     def set_is_chase(self, chase_flag: str):
         """"""
         if chase_flag == "是":
@@ -922,32 +923,38 @@ class SkipContractEditor(QtWidgets.QDialog):
         self.setWindowTitle("同步合约设置")
         self.setMinimumWidth(300)
 
+        # 几个line往前移，pyside6在ui初始化connect函数的时候就会实际运行一次，如果函数里面有line属性的话，按原先放后面就会报attributeError
+        validator = QtGui.QIntValidator()
+        self.new_remove_line = QtWidgets.QLineEdit()
+        self.new_intra_line = QtWidgets.QLineEdit()
+        self.new_order_vol_line = QtWidgets.QLineEdit()
+        self.new_order_vol_line.setValidator(validator)
+
         self.symbol_combo = ComboBox()
         self.symbol_combo.pop_show.connect(self.refresh_symbol_list)
-        self.symbol_combo.activated[str].connect(self.set_removed_symbol)
+        self.symbol_combo.currentTextChanged[str].connect(self.set_removed_symbol)
         self.refresh_symbol_list()
 
         self.intra_combo = ComboBox()
         self.intra_combo.pop_show.connect(self.refresh_intra_list)
-        self.intra_combo.activated[str].connect(self.set_removed_com)
+        self.intra_combo.currentTextChanged[str].connect(self.set_removed_com)
         self.refresh_intra_list()
+
+        self.button_add_order_volume = QtWidgets.QPushButton("添加委托手数")
+        self.button_add_order_volume.clicked.connect(self.add_order_volume)
+
+        self.button_remove_order_volume = QtWidgets.QPushButton("移除委托手数")
+        self.button_remove_order_volume.clicked.connect(self.remove_order_volume)
 
         self.order_vol_combo = ComboBox()
         self.order_vol_combo.pop_show.connect(self.refresh_order_vol_white_list)
-        self.order_vol_combo.activated[str].connect(self.set_removed_order_vol)
+        self.order_vol_combo.currentTextChanged[str].connect(self.set_removed_order_vol)
         self.refresh_order_vol_white_list()
 
         self.filter_vol_combo = QtWidgets.QComboBox()
         self.filter_vol_combo.addItems(['是', '否'])
-        self.filter_vol_combo.activated[str].connect(self.set_is_filter_vol)
+        self.filter_vol_combo.currentTextChanged[str].connect(self.set_is_filter_vol)
         self.get_current_filter_vol()
-
-        validator = QtGui.QIntValidator()
-        self.new_remove_line = QtWidgets.QLineEdit()
-        self.new_intra_line = QtWidgets.QLineEdit()
-        
-        self.new_order_vol_line = QtWidgets.QLineEdit()
-        self.new_order_vol_line.setValidator(validator)
 
         button_add = QtWidgets.QPushButton("添加禁止同步")
         button_add.clicked.connect(self.add)
@@ -961,16 +968,10 @@ class SkipContractEditor(QtWidgets.QDialog):
         button_remove_com = QtWidgets.QPushButton("移除日内品种")
         button_remove_com.clicked.connect(self.remove_com)
 
-        button_add_order_volume = QtWidgets.QPushButton("添加委托手数")
-        button_add_order_volume.clicked.connect(self.add_order_volume)
-
-        button_remove_order_volume = QtWidgets.QPushButton("移除委托手数")
-        button_remove_order_volume.clicked.connect(self.remove_order_volume)
-
         big_btns = [
             button_add, button_remove,
             button_add_com, button_remove_com,
-            button_add_order_volume, button_remove_order_volume
+            self.button_add_order_volume, self.button_remove_order_volume
         ]
 
         for btn in big_btns:
@@ -1002,8 +1003,8 @@ class SkipContractEditor(QtWidgets.QDialog):
         form_order_vol.addRow("添加新手数", self.new_order_vol_line)
 
         hbox_order_vol = QtWidgets.QHBoxLayout()
-        hbox_order_vol.addWidget(button_add_order_volume)
-        hbox_order_vol.addWidget(button_remove_order_volume)
+        hbox_order_vol.addWidget(self.button_add_order_volume)
+        hbox_order_vol.addWidget(self.button_remove_order_volume)
 
         vbox = QtWidgets.QVBoxLayout()
         vbox.addLayout(form)
@@ -1017,47 +1018,46 @@ class SkipContractEditor(QtWidgets.QDialog):
 
         self.setLayout(vbox)
 
-        # self.symbol_combo.currentTextChanged[str].connect(self.set_removed_symbol)
-        # self.intra_combo.currentTextChanged[str].connect(self.set_removed_com)
-
     def set_removed_symbol(self, vt_symbol: str):
         """
         Set symbol to be modified
         """
-        self.new_remove_line.setText(vt_symbol)
-        self.removed_symbol = vt_symbol
-        self.write_log(f"选中合约名{self.removed_symbol}")
+        # 添加判断，使数值为空时（combobox列表清空重新加载时）不提醒
+        if vt_symbol:
+            self.new_remove_line.setText(vt_symbol)
+            self.removed_symbol = vt_symbol
+            self.write_log(f"选中合约名{self.removed_symbol}")
 
     def set_removed_com(self, commodity: str):
         """
         Set commodity to intraday mode
         """
-        self.new_intra_line.setText(commodity)
-        self.removed_com = commodity
-        self.write_log(f"选中品种名{self.removed_com}")
+        if commodity:
+            self.new_intra_line.setText(commodity)
+            self.removed_com = commodity
+            self.write_log(f"选中品种名{self.removed_com}")
 
     def set_removed_order_vol(self, volume: str):
         """"""
-        self.new_order_vol_line.setText(volume)
-        self.removed_vol = int(volume)
-        self.write_log(f"选中委托手数{self.removed_vol}")
+        if volume:
+            self.new_order_vol_line.setText(volume)
+            self.removed_vol = int(volume)
+            self.write_log(f"选中委托手数{self.removed_vol}")
 
     def refresh_symbol_list(self):
         """"""
-        self.symbol_combo.clear()
+        # pyside6的clear会引起currentText的变化,不使用clear来更新列表
         symbol_list = self.follow_engine.get_skip_contracts()
-        self.symbol_combo.addItems(symbol_list)
+        self.symbol_combo.update_items_from_target(symbol_list)
 
     def refresh_intra_list(self):
-        self.intra_combo.clear()
         symbol_list = self.follow_engine.get_intraday_symbols()
-        self.intra_combo.addItems(symbol_list)
+        self.intra_combo.update_items_from_target(symbol_list)
 
     def refresh_order_vol_white_list(self):
-        self.order_vol_combo.clear()
         vol_list = self.follow_engine.get_order_vols_to_follow()
         vol_str_list = [str(vol) for vol in vol_list]
-        self.order_vol_combo.addItems(vol_str_list)
+        self.order_vol_combo.update_items_from_target(vol_str_list)
 
     def add(self):
         """"""
@@ -1129,7 +1129,8 @@ class SkipContractEditor(QtWidgets.QDialog):
 
     def remove_order_volume(self):
         order_vol = self.removed_vol
-        if order_vol:
+        # 可以移除0手委托
+        if order_vol is not None:
             vol_list = self.follow_engine.get_order_vols_to_follow()
             if order_vol in vol_list:
                 vol_list.remove(order_vol)
@@ -1144,8 +1145,18 @@ class SkipContractEditor(QtWidgets.QDialog):
         """"""
         if chase_flag == "是":
             self.follow_engine.set_parameters('is_filter_order_vol', True)
+            self.parent.order_vol_combo.setEnabled(True)
+            self.order_vol_combo.setEnabled(True)
+            self.new_order_vol_line.setEnabled(True)
+            self.button_add_order_volume.setEnabled(True)
+            self.button_remove_order_volume.setEnabled(True)
         else:
             self.follow_engine.set_parameters('is_filter_order_vol', False)
+            self.parent.order_vol_combo.setEnabled(False)
+            self.order_vol_combo.setEnabled(False)
+            self.new_order_vol_line.setEnabled(False)
+            self.button_add_order_volume.setEnabled(False)
+            self.button_remove_order_volume.setEnabled(False)
         self.write_log(f"是否过滤委托手数：{self.follow_engine.is_filter_order_vol}")
 
     def get_current_filter_vol(self):
@@ -1180,7 +1191,7 @@ class CloseHedgedDialog(QtWidgets.QDialog):
 
         self.symbol_combo = ComboBox()
         self.symbol_combo.pop_show.connect(self.refresh_symbol_list)
-        self.symbol_combo.activated[str].connect(self.set_close_symbol)
+        self.symbol_combo.currentTextChanged[str].connect(self.set_close_symbol)
 
         validator = QtGui.QIntValidator()
         self.close_pos_line = QtWidgets.QLineEdit()
@@ -1219,9 +1230,8 @@ class CloseHedgedDialog(QtWidgets.QDialog):
 
     def refresh_symbol_list(self):
         """"""
-        self.symbol_combo.clear()
         symbol_list = list(self.follow_engine.get_positions().keys())
-        self.symbol_combo.addItems(symbol_list)
+        self.symbol_combo.update_items_from_target(symbol_list)
 
     def close_hedged_pos(self):
         """"""

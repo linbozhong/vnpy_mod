@@ -13,4 +13,4 @@ class FollowTradingApp(BaseApp):
     display_name = "跟随交易"
     engine_class = FollowEngine
     widget_name = "FollowManager"
-    icon_name = "follow.ico"
+    icon_name = str(app_path.joinpath("ui", "follow.ico"))
